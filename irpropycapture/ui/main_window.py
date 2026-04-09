@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self.last_render_bgr: np.ndarray | None = None
         self.last_temps_celsius: np.ndarray | None = None
         self.last_history_points: list[TemperatureHistoryPoint] = []
+        self.last_histogram_points: list[HistogramPoint] = []
 
         self.preview = QLabel("No image")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -64,7 +65,8 @@ class MainWindow(QMainWindow):
         self.info.setWordWrap(True)
         self.histogram_label = QLabel()
         self.history_label = QLabel()
-        self.histogram_label.setFixedHeight(160)
+        self.histogram_label.setMinimumHeight(160)
+        self.histogram_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.history_label.setMinimumHeight(180)
         # Keep horizontal size flexible even after large pixmaps were rendered.
         # Otherwise QLabel size hints can prevent the window from shrinking again.
@@ -127,10 +129,9 @@ class MainWindow(QMainWindow):
         charts_box.setLayout(charts_layout)
 
         side = QVBoxLayout()
-        side.addWidget(charts_box)
+        side.addWidget(charts_box, stretch=1)
         side.addWidget(controls_box)
         side.addWidget(self.info)
-        side.addStretch(1)
 
         body = QHBoxLayout()
         body.addWidget(self.preview, stretch=3)
@@ -322,7 +323,10 @@ class MainWindow(QMainWindow):
         )
 
     def _update_histogram(self, histogram: list[HistogramPoint]) -> None:
-        canvas = np.zeros((160, 220, 3), dtype=np.uint8)
+        self.last_histogram_points = list(histogram)
+        hist_width = max(self.histogram_label.width(), 220)
+        hist_height = max(self.histogram_label.height(), 160)
+        canvas = np.zeros((hist_height, hist_width, 3), dtype=np.uint8)
         bar_x0 = 46
         bar_x1 = 86
         curve_x0 = 96
@@ -625,6 +629,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if self.last_render_bgr is not None:
             self._set_preview_image(self.last_render_bgr)
+        if self.last_histogram_points:
+            self._update_histogram(self.last_histogram_points)
         if self.last_history_points:
             self._update_history(self.last_history_points)
 
