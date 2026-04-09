@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from irpropycapture.core.camera_capture import FfmpegCaptureWorker, list_ffmpeg_avfoundation_devices, probe_ffmpeg_source
+from irpropycapture.core.camera_capture import OpenCVCaptureWorker, list_opencv_camera_devices, probe_opencv_source
 from irpropycapture.core.image_processor import (
     AVAILABLE_COLOR_MAPS,
     apply_orientation,
@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("IrProPyCapture")
         self.resize(1300, 820)
 
-        self.capture_worker: FfmpegCaptureWorker | None = None
+        self.capture_worker: OpenCVCaptureWorker | None = None
         self.processor = TemperatureProcessor()
         self.recorder = VideoRecorder()
         self.available_camera_items: list[tuple[str, int, str, int, int, float]] = []
@@ -208,11 +208,17 @@ class MainWindow(QMainWindow):
     def refresh_camera_list(self) -> None:
         self.camera_combo.clear()
         self.available_camera_items.clear()
-        devices = list_ffmpeg_avfoundation_devices()
+        devices = list_opencv_camera_devices(
+            width=256,
+            height=384,
+            fps=25,
+        )
         for idx, name in devices:
-            label = f"FFmpeg {idx}: {name} [256x384@25]"
+            label = f"Camera {idx}: {name} [256x384@25]"
             self.camera_combo.addItem(label)
-            self.available_camera_items.append(("ffmpeg", idx, name, 256, 384, 25.0))
+            self.available_camera_items.append(("opencv", idx, name, 256, 384, 25.0))
+        if not self.available_camera_items:
+            self.camera_combo.addItem("No compatible thermal camera found")
         for pos, item in enumerate(self.available_camera_items):
             _, idx, name, _, _, _ = item
             if idx == self.state.camera_index or name == self.state.camera_name:
@@ -223,7 +229,7 @@ class MainWindow(QMainWindow):
         pos = self.camera_combo.currentIndex()
         if 0 <= pos < len(self.available_camera_items):
             return self.available_camera_items[pos]
-        return ("ffmpeg", 0, "Unknown", 256, 384, 25.0)
+        return ("opencv", 0, "Unknown", 256, 384, 25.0)
 
     def toggle_capture(self) -> None:
         if self.capture_worker is not None:
@@ -232,13 +238,21 @@ class MainWindow(QMainWindow):
             self.start_button.setText("Start Camera")
             return
 
-        _, index, _, width, height, fps = self.selected_camera_item()
-        ok, pix_or_err = probe_ffmpeg_source(index, width, height, int(fps))
-        if not ok:
-            QMessageBox.critical(self, "Camera Error", pix_or_err)
+        if not self.available_camera_items:
+            QMessageBox.information(
+                self,
+                "Camera",
+                "No compatible thermal camera found.\nExpected mode: 256x384 raw-compatible stream.",
+            )
             return
 
-        self.capture_worker = FfmpegCaptureWorker(index, width, height, int(fps), pix_fmt=pix_or_err)
+        _, index, _, width, height, fps = self.selected_camera_item()
+        ok, probe_msg = probe_opencv_source(index, width, height, int(fps))
+        if not ok:
+            QMessageBox.critical(self, "Camera Error", probe_msg)
+            return
+
+        self.capture_worker = OpenCVCaptureWorker(index, width, height, int(fps))
         self.capture_worker.frame_ready.connect(self.on_frame_ready)
         self.capture_worker.error.connect(lambda msg: QMessageBox.critical(self, "Capture Error", msg))
         self.capture_worker.start()

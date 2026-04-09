@@ -4,7 +4,7 @@ Python port of the thermal camera viewer with a PySide6 desktop UI.
 
 ## Features
 
-- Live thermal stream from USB camera via FFmpeg/AVFoundation
+- Live thermal stream from USB camera via OpenCV (`cv2.VideoCapture`)
 - Colormap rendering (`Turbo`, `Inferno`, `Jet`, `Hot`, `Rainbow`, `Parula`, `Viridis`, `Plasma`, `Coolwarm`, `Magma`, `Twilight`, `Autumn`, `Spring`, `Winter`, `HSV`, `Cubehelix`, `Cividis`, `Bone`)
 - Temperature stats: Min, Max, Average, Center
 - Optional temperature grid overlay
@@ -20,9 +20,8 @@ Python port of the thermal camera viewer with a PySide6 desktop UI.
 
 ## Requirements
 
-- macOS (tested with AVFoundation camera input)
+- macOS, Linux, or Windows (OpenCV camera backend)
 - Python 3.11+ (3.14 also works)
-- FFmpeg installed and available in `PATH`
 
 Python dependencies are listed in `requirements.txt`.
 
@@ -70,7 +69,7 @@ Original repository:
 
 ## Notes
 
-- On first run, macOS may request camera permission.
+- On first run, the OS may request camera permission.
 - UI state is stored in `~/.irpropycapture_state.json`.
-- If no image appears, verify FFmpeg installation and camera access permissions.
+- If no image appears, verify camera access permissions and that the camera is not used by another application.
 
