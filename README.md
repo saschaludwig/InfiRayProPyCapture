@@ -27,7 +27,7 @@ Python dependencies are listed in `requirements.txt`.
 
 ## Setup
 
-From the `IrProPyCapture` directory:
+From the repository root:
 
 ```bash
 python3 -m venv .venv
@@ -38,13 +38,6 @@ pip install -r requirements.txt
 ## Run
 
 From the repository root:
-
-```bash
-source IrProPyCapture/.venv/bin/activate
-python -m IrProPyCapture.irpropycapture.main
-```
-
-Or from inside `IrProPyCapture`:
 
 ```bash
 source .venv/bin/activate

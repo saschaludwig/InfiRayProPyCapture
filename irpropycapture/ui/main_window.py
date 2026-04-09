@@ -281,7 +281,15 @@ class MainWindow(QMainWindow):
                 # after preview scaling in _set_preview_image.
                 oriented_thermal = apply_orientation(thermal, orientation)
 
-            self.last_render_bgr = rendered
+            # Build an export/record frame that includes temperature overlays.
+            rendered_with_overlays = rendered.copy()
+            if oriented_thermal is not None:
+                if self.grid_checkbox.isChecked():
+                    self._draw_grid_fixed_screen_size(rendered_with_overlays, oriented_thermal)
+                if self.min_max_checkbox.isChecked():
+                    self._draw_min_max_fixed_screen_size(rendered_with_overlays, oriented_thermal)
+
+            self.last_render_bgr = rendered_with_overlays
             self._set_preview_image(
                 rendered,
                 overlay_thermal=oriented_thermal if self.grid_checkbox.isChecked() else None,
@@ -291,7 +299,7 @@ class MainWindow(QMainWindow):
             self._update_histogram(result.histogram)
             self._update_history(result.temperature_history)
             if self.recorder.is_recording:
-                self.recorder.write_frame(rendered)
+                self.recorder.write_frame(rendered_with_overlays)
         except Exception as exc:
             self.preview.setText(f"Decode error: {exc}")
 
