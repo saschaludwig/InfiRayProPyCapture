@@ -73,3 +73,17 @@ Original repository:
 - UI state is stored in `~/.irpropycapture_state.json`.
 - If no image appears, verify camera access permissions and that the camera is not used by another application.
 
+## Platform Notes
+
+- macOS:
+  - Current thermal-camera path prefers AVFoundation via OpenCV FFMPEG input source (`USB-Kamera:none`) for the known USB device.
+  - If the thermal stream is not found, verify camera permissions in System Settings and close other apps using the device.
+
+- Linux:
+  - Capture uses OpenCV V4L2 backend and probes camera indices for raw-compatible formats (`Y16`/`YUYV`/`UYVY`).
+  - Ensure your user can access `/dev/video*` devices (udev/group permissions).
+
+- Windows:
+  - Capture uses OpenCV MSMF backend first, then DirectShow fallback for broader USB camera compatibility.
+  - If no stream opens, verify camera privacy settings and close software that may lock the camera.
+

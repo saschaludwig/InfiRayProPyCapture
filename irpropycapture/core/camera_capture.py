@@ -16,12 +16,28 @@ def _fourcc_code(tag: str) -> int:
 
 
 def _open_capture(camera_index: int, width: int, height: int, fps: int) -> tuple[cv2.VideoCapture | None, str]:
-    """
-    Open capture with the most reliable backend for the current platform.
-    """
-    backend = _preferred_backend()
+    """Open capture with platform-specific backend strategy."""
+    system = platform.system()
+    if system == "Darwin":
+        return _open_capture_macos(camera_index, width, height, fps)
+    if system == "Windows":
+        return _open_capture_windows(camera_index)
+    if system == "Linux":
+        return _open_capture_linux(camera_index)
+    return _open_capture_native(camera_index, cv2.CAP_ANY, "native-any")
 
-    if platform.system() == "Darwin" and camera_index == 0:
+
+def _open_capture_native(camera_index: int, backend: int, mode: str) -> tuple[cv2.VideoCapture | None, str]:
+    cap = cv2.VideoCapture(camera_index, backend)
+    if cap.isOpened():
+        return cap, mode
+    cap.release()
+    return None, ""
+
+
+def _open_capture_macos(camera_index: int, width: int, height: int, fps: int) -> tuple[cv2.VideoCapture | None, str]:
+    # Keep existing working path for the thermal camera on macOS.
+    if camera_index == 0:
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
             f"input_format;avfoundation|framerate;{fps}|video_size;{width}x{height}|pixel_format;yuyv422"
         )
@@ -32,12 +48,21 @@ def _open_capture(camera_index: int, width: int, height: int, fps: int) -> tuple
                 cap.set(cv2.CAP_PROP_CONVERT_RGB, 0.0)
                 return cap, "ffmpeg-avfoundation-usb"
             cap.release()
+    return _open_capture_native(camera_index, cv2.CAP_AVFOUNDATION, "native-avfoundation")
 
-    cap = cv2.VideoCapture(camera_index, backend)
-    if cap.isOpened():
-        return cap, "native"
-    cap.release()
-    return None, ""
+
+def _open_capture_windows(camera_index: int) -> tuple[cv2.VideoCapture | None, str]:
+    cap, mode = _open_capture_native(camera_index, cv2.CAP_MSMF, "native-msmf")
+    if cap is not None:
+        return cap, mode
+    return _open_capture_native(camera_index, cv2.CAP_DSHOW, "native-dshow")
+
+
+def _open_capture_linux(camera_index: int) -> tuple[cv2.VideoCapture | None, str]:
+    cap, mode = _open_capture_native(camera_index, cv2.CAP_V4L2, "native-v4l2")
+    if cap is not None:
+        return cap, mode
+    return _open_capture_native(camera_index, cv2.CAP_ANY, "native-any")
 
 
 def _configure_capture_for_raw(cap: cv2.VideoCapture, width: int, height: int, fps: int) -> None:
@@ -78,6 +103,24 @@ def _preferred_backend() -> int:
     if system == "Linux":
         return cv2.CAP_V4L2
     return cv2.CAP_ANY
+
+
+def _fourcc_candidates_for_mode(mode: str) -> list[str]:
+    if "v4l2" in mode:
+        return ["Y16 ", "YUYV", "YUY2", "UYVY"]
+    if "msmf" in mode or "dshow" in mode:
+        return ["Y16 ", "YUY2", "UYVY", "YUYV"]
+    if "avfoundation" in mode:
+        return ["YUYV", "UYVY", "YUY2", "Y16 "]
+    return ["Y16 ", "YUY2", "UYVY", "YUYV"]
+
+
+def _frame_attempts_for_mode(mode: str, base_attempts: int) -> int:
+    if "v4l2" in mode:
+        return max(base_attempts, 28)
+    if "msmf" in mode:
+        return max(base_attempts, 24)
+    return base_attempts
 
 
 def _pack_for_temperature_pipeline(raw_16: np.ndarray) -> np.ndarray:
@@ -144,10 +187,12 @@ def _convert_capture_to_pipeline_frame(frame: np.ndarray) -> np.ndarray:
 
 def _default_max_index() -> int:
     """Return a conservative scan limit per platform."""
-    if platform.system() == "Darwin":
-        # AVFoundation often exposes a small contiguous index range.
+    system = platform.system()
+    if system == "Darwin":
         return 3
-    return 10
+    if system in ("Linux", "Windows"):
+        return 10
+    return 6
 
 
 def list_opencv_camera_devices(
@@ -157,13 +202,6 @@ def list_opencv_camera_devices(
     fps: int = 25,
     required_name: str | None = None,
 ) -> list[tuple[int, str]]:
-    if platform.system() == "Darwin":
-        # On macOS we target the known thermal source explicitly.
-        ok, _ = probe_opencv_source(camera_index=0, width=width, height=height, fps=fps, frame_attempts=12)
-        if ok:
-            return [(0, "USB-Kamera")]
-        return []
-
     devices: list[tuple[int, str]] = []
     max_scan_index = _default_max_index() if max_index is None else max_index
     _ = required_name  # Kept for compatibility; OpenCV index probing is name-agnostic.
@@ -177,7 +215,10 @@ def list_opencv_camera_devices(
         )
         if not ok:
             continue
-        name = f"Camera {index}"
+        if platform.system() == "Darwin" and index == 0:
+            name = "USB-Kamera"
+        else:
+            name = f"Camera {index}"
         devices.append((index, name))
     return devices
 
@@ -198,17 +239,18 @@ def probe_opencv_source(
 
     # 1) Try default stream first.
     _configure_capture_for_raw(cap, width, height, fps)
-    ok, err = _read_convertible_frame(cap, frame_attempts)
+    effective_attempts = _frame_attempts_for_mode(mode, frame_attempts)
+    ok, err = _read_convertible_frame(cap, effective_attempts)
     if ok:
         cap.release()
         return True, mode or "ok"
 
     # 2) Try explicit thermal-related pixel formats.
-    fourcc_candidates = ["Y16 ", "Y16", "YUY2", "UYVY", "YUYV"]
+    fourcc_candidates = _fourcc_candidates_for_mode(mode)
     last_error = err
     for fourcc_tag in fourcc_candidates:
         cap.set(cv2.CAP_PROP_FOURCC, float(_fourcc_code(fourcc_tag[:4].ljust(4))))
-        ok, err = _read_convertible_frame(cap, frame_attempts)
+        ok, err = _read_convertible_frame(cap, effective_attempts)
         if ok:
             cap.release()
             return True, mode or "ok"
@@ -239,8 +281,8 @@ class OpenCVCaptureWorker(QThread):
                 self.error.emit(f"Could not open camera index {self.camera_index}.")
                 return
             _configure_capture_for_raw(self._capture, self.width, self.height, self.fps)
-            if self._capture_mode == "native":
-                for fourcc_tag in ("Y16 ", "Y16", "YUY2", "UYVY", "YUYV"):
+            if not self._capture_mode.startswith("ffmpeg-"):
+                for fourcc_tag in _fourcc_candidates_for_mode(self._capture_mode):
                     self._capture.set(cv2.CAP_PROP_FOURCC, float(_fourcc_code(fourcc_tag[:4].ljust(4))))
         except Exception as exc:
             self.error.emit(f"Camera start failed: {exc}")
