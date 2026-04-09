@@ -30,7 +30,6 @@ from irpropycapture.core.camera_capture import OpenCVCaptureWorker, list_opencv_
 from irpropycapture.core.image_processor import (
     AVAILABLE_COLOR_MAPS,
     apply_orientation,
-    draw_temperature_grid,
     format_temperature,
     render_thermal_image,
 )
@@ -273,34 +272,21 @@ class MainWindow(QMainWindow):
                 manual_max_temp=float(self.max_spin.value()),
             )
             rendered = cv2.resize(rendered, (1024, 768), interpolation=cv2.INTER_NEAREST)
-            base_h, base_w = rendered.shape[:2]
-
-            # Draw orientation-sensitive overlays in sensor coordinate space first.
-            marker_payload = None
-            if self.min_max_checkbox.isChecked():
-                marker_payload = self._draw_min_max_markers(rendered, thermal)
             orientation = self.orientation_combo.currentText()
             rendered = apply_orientation(rendered, orientation)
-            if self.grid_checkbox.isChecked():
-                # Keep grid text readable: rotate data with the image, then draw labels upright.
+
+            oriented_thermal = None
+            if self.grid_checkbox.isChecked() or self.min_max_checkbox.isChecked():
+                # Keep grid/min-max labels at fixed screen size by drawing them
+                # after preview scaling in _set_preview_image.
                 oriented_thermal = apply_orientation(thermal, orientation)
-                draw_temperature_grid(
-                    rendered,
-                    oriented_thermal,
-                    self.grid_density_combo.currentText(),
-                    self.unit_combo.currentText(),
-                )
-            if self.min_max_checkbox.isChecked() and marker_payload is not None:
-                self._draw_min_max_labels_after_orientation(
-                    rendered,
-                    marker_payload,
-                    orientation,
-                    base_w,
-                    base_h,
-                )
 
             self.last_render_bgr = rendered
-            self._set_preview_image(rendered)
+            self._set_preview_image(
+                rendered,
+                overlay_thermal=oriented_thermal if self.grid_checkbox.isChecked() else None,
+                overlay_min_max=oriented_thermal if self.min_max_checkbox.isChecked() else None,
+            )
             self._update_stats(result.min_value, result.max_value, result.average, result.center)
             self._update_histogram(result.histogram)
             self._update_history(result.temperature_history)
@@ -309,24 +295,94 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.preview.setText(f"Decode error: {exc}")
 
-    def _set_preview_image(self, image_bgr: np.ndarray) -> None:
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    def _set_preview_image(
+        self,
+        image_bgr: np.ndarray,
+        overlay_thermal: np.ndarray | None = None,
+        overlay_min_max: np.ndarray | None = None,
+    ) -> None:
+        display_bgr = image_bgr
+        target_size = self.preview.size()
+        if target_size.width() > 0 and target_size.height() > 0:
+            interpolation = (
+                cv2.INTER_NEAREST
+                if self.preview_interpolation_combo.currentText() == "Fast"
+                else cv2.INTER_LINEAR
+            )
+            src_h, src_w = image_bgr.shape[:2]
+            scale = min(target_size.width() / float(src_w), target_size.height() / float(src_h))
+            out_w = max(1, int(src_w * scale))
+            out_h = max(1, int(src_h * scale))
+            display_bgr = cv2.resize(image_bgr, (out_w, out_h), interpolation=interpolation)
+
+        if overlay_thermal is not None:
+            self._draw_grid_fixed_screen_size(display_bgr, overlay_thermal)
+        if overlay_min_max is not None:
+            self._draw_min_max_fixed_screen_size(display_bgr, overlay_min_max)
+
+        rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
         h, w, _ = rgb.shape
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimg)
-        target_size = self.preview.size()
-        if target_size.width() > 0 and target_size.height() > 0:
-            transform_mode = (
-                Qt.TransformationMode.FastTransformation
-                if self.preview_interpolation_combo.currentText() == "Fast"
-                else Qt.TransformationMode.SmoothTransformation
-            )
-            pixmap = pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                transform_mode,
-            )
         self.preview.setPixmap(pixmap)
+
+    def _draw_grid_fixed_screen_size(self, image_bgr: np.ndarray, thermal_celsius: np.ndarray) -> None:
+        if self.grid_density_combo.currentText() == "Low":
+            step_x, step_y = 64, 48
+        elif self.grid_density_combo.currentText() == "High":
+            step_x, step_y = 24, 18
+        else:
+            step_x, step_y = 32, 24
+
+        h, w = thermal_celsius.shape
+        scale_x = image_bgr.shape[1] / float(w)
+        scale_y = image_bgr.shape[0] / float(h)
+        font_scale = 0.38
+        for y in range(step_y // 2, h, step_y):
+            for x in range(step_x // 2, w, step_x):
+                value = float(thermal_celsius[y, x])
+                text = format_temperature(value, self.unit_combo.currentText())
+                px = int(x * scale_x)
+                py = int(y * scale_y)
+                cv2.putText(image_bgr, text, (px - 26, py), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), 2, cv2.LINE_AA)
+                cv2.putText(image_bgr, text, (px - 26, py), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+
+    def _draw_min_max_fixed_screen_size(self, image_bgr: np.ndarray, thermal_celsius: np.ndarray) -> None:
+        height, width = thermal_celsius.shape
+        border = 2
+        if width > border * 2 and height > border * 2:
+            roi = thermal_celsius[border : height - border, border : width - border]
+            min_index = int(np.argmin(roi))
+            max_index = int(np.argmax(roi))
+            roi_w = roi.shape[1]
+            min_y, min_x = divmod(min_index, roi_w)
+            max_y, max_x = divmod(max_index, roi_w)
+            min_y += border
+            min_x += border
+            max_y += border
+            max_x += border
+        else:
+            min_index = int(np.argmin(thermal_celsius))
+            max_index = int(np.argmax(thermal_celsius))
+            min_y, min_x = divmod(min_index, width)
+            max_y, max_x = divmod(max_index, width)
+
+        scale_x = image_bgr.shape[1] / float(width)
+        scale_y = image_bgr.shape[0] / float(height)
+        min_px = int(min_x * scale_x)
+        min_py = int(min_y * scale_y)
+        max_px = int(max_x * scale_x)
+        max_py = int(max_y * scale_y)
+
+        cv2.drawMarker(image_bgr, (min_px, min_py), (255, 0, 0), markerType=cv2.MARKER_CROSS, markerSize=14, thickness=2)
+        cv2.drawMarker(image_bgr, (max_px, max_py), (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=14, thickness=2)
+
+        min_label = f"Min {format_temperature(float(thermal_celsius[min_y, min_x]), self.unit_combo.currentText())}"
+        max_label = f"Max {format_temperature(float(thermal_celsius[max_y, max_x]), self.unit_combo.currentText())}"
+        min_org = self._choose_label_origin(image_bgr, min_px, min_py, min_label)
+        max_org = self._choose_label_origin(image_bgr, max_px, max_py, max_label)
+        self._draw_text_with_outline(image_bgr, min_label, min_org, (255, 220, 220))
+        self._draw_text_with_outline(image_bgr, max_label, max_org, (220, 220, 255))
 
     def _update_stats(self, min_c: float, max_c: float, avg_c: float, center_c: float) -> None:
         self.info.setText(
@@ -534,80 +590,6 @@ class MainWindow(QMainWindow):
                 cv2.putText(canvas, label, (lx + 10, ly + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (220, 220, 220), 1, cv2.LINE_AA)
                 ly += 24
         self.history_label.setPixmap(self._pixmap_from_bgr(canvas))
-
-    def _draw_min_max_markers(self, image_bgr: np.ndarray, thermal_celsius: np.ndarray) -> dict[str, tuple[int, int] | str]:
-        height, width = thermal_celsius.shape
-        # Ignore a small border to avoid hot/cold edge artifacts and dead pixels.
-        border = 2
-        if width > border * 2 and height > border * 2:
-            roi = thermal_celsius[border : height - border, border : width - border]
-            min_index = int(np.argmin(roi))
-            max_index = int(np.argmax(roi))
-            roi_w = roi.shape[1]
-            min_y, min_x = divmod(min_index, roi_w)
-            max_y, max_x = divmod(max_index, roi_w)
-            min_y += border
-            min_x += border
-            max_y += border
-            max_x += border
-        else:
-            min_index = int(np.argmin(thermal_celsius))
-            max_index = int(np.argmax(thermal_celsius))
-            min_y, min_x = divmod(min_index, width)
-            max_y, max_x = divmod(max_index, width)
-
-        scale_x = image_bgr.shape[1] / float(width)
-        scale_y = image_bgr.shape[0] / float(height)
-
-        min_px = int(min_x * scale_x)
-        min_py = int(min_y * scale_y)
-        max_px = int(max_x * scale_x)
-        max_py = int(max_y * scale_y)
-
-        min_text = format_temperature(float(thermal_celsius[min_y, min_x]), self.unit_combo.currentText())
-        max_text = format_temperature(float(thermal_celsius[max_y, max_x]), self.unit_combo.currentText())
-
-        cv2.drawMarker(image_bgr, (min_px, min_py), (255, 0, 0), markerType=cv2.MARKER_CROSS, markerSize=12, thickness=2)
-        cv2.drawMarker(image_bgr, (max_px, max_py), (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=12, thickness=2)
-        return {
-            "min_point": (min_px, min_py),
-            "max_point": (max_px, max_py),
-            "min_text": f"Min {min_text}",
-            "max_text": f"Max {max_text}",
-        }
-
-    def _draw_min_max_labels_after_orientation(
-        self,
-        image_bgr: np.ndarray,
-        marker_payload: dict[str, tuple[int, int] | str],
-        orientation: str,
-        base_w: int,
-        base_h: int,
-    ) -> None:
-        min_pt = marker_payload["min_point"]
-        max_pt = marker_payload["max_point"]
-        assert isinstance(min_pt, tuple) and isinstance(max_pt, tuple)
-        min_x, min_y = self._map_point_for_orientation(min_pt[0], min_pt[1], orientation, base_w, base_h)
-        max_x, max_y = self._map_point_for_orientation(max_pt[0], max_pt[1], orientation, base_w, base_h)
-        min_label = marker_payload["min_text"]
-        max_label = marker_payload["max_text"]
-        assert isinstance(min_label, str) and isinstance(max_label, str)
-        min_org = self._choose_label_origin(image_bgr, min_x, min_y, min_label)
-        max_org = self._choose_label_origin(image_bgr, max_x, max_y, max_label)
-        self._draw_text_with_outline(image_bgr, min_label, min_org, (255, 220, 220))
-        self._draw_text_with_outline(image_bgr, max_label, max_org, (220, 220, 255))
-
-    @staticmethod
-    def _map_point_for_orientation(x: int, y: int, orientation: str, width: int, height: int) -> tuple[int, int]:
-        if orientation == "Rotate Left":
-            return y, width - 1 - x
-        if orientation == "Rotate Right":
-            return height - 1 - y, x
-        if orientation == "Flip Horizontal":
-            return width - 1 - x, y
-        if orientation == "Flip Vertical":
-            return x, height - 1 - y
-        return x, y
 
     @staticmethod
     def _draw_text_with_outline(image_bgr: np.ndarray, text: str, org: tuple[int, int], color: tuple[int, int, int]) -> None:
