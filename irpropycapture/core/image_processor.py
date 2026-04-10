@@ -114,11 +114,19 @@ def _resolve_cv2_colormap(color_map_name: str) -> int | None:
     return getattr(cv2, cv2_attr_name, None)
 
 
-def format_temperature(value_celsius: float, temp_unit: str) -> str:
+def format_temperature_ui(value_celsius: float, temp_unit: str) -> str:
     if temp_unit == "F":
         value = value_celsius * 9.0 / 5.0 + 32.0
-        return f"{value:.1f} F"
-    return f"{value_celsius:.1f} C"
+        return f"{value:.1f} °F"
+    return f"{value_celsius:.1f} °C"
+
+
+def format_temperature_overlay(value_celsius: float, temp_unit: str) -> str:
+    """ASCII-only formatting for OpenCV Hershey overlay text."""
+    if temp_unit == "F":
+        value = value_celsius * 9.0 / 5.0 + 32.0
+        return f"{value:.1f}F"
+    return f"{value_celsius:.1f}C"
 
 
 def render_thermal_image(
@@ -164,7 +172,7 @@ def draw_temperature_grid(image_bgr: np.ndarray, thermal_celsius: np.ndarray, de
     for y in range(step_y // 2, h, step_y):
         for x in range(step_x // 2, w, step_x):
             value = float(thermal_celsius[y, x])
-            text = format_temperature(value, temp_unit)
+            text = format_temperature_overlay(value, temp_unit)
             px = int(x * scale_x)
             py = int(y * scale_y)
             cv2.putText(image_bgr, text, (px - 26, py), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1, cv2.LINE_AA)

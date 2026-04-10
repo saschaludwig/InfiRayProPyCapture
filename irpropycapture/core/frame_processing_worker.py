@@ -10,7 +10,11 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QMutex, QMutexLocker, QThread, QWaitCondition, Signal
 
-from irpropycapture.core.image_processor import apply_orientation, format_temperature, render_thermal_image
+from irpropycapture.core.image_processor import (
+    apply_orientation,
+    format_temperature_overlay,
+    render_thermal_image,
+)
 from irpropycapture.core.perf import PerfReporter
 from irpropycapture.core.temperature_processor import HistogramPoint, TemperatureHistoryPoint, TemperatureProcessor
 
@@ -260,7 +264,7 @@ def _draw_grid(image_bgr: np.ndarray, thermal_celsius: np.ndarray, density: str,
     for y in range(step_y // 2, h, step_y):
         for x in range(step_x // 2, w, step_x):
             value = float(thermal_celsius[y, x])
-            text = format_temperature(value, unit)
+            text = format_temperature_overlay(value, unit)
             px = int(x * scale_x)
             py = int(y * scale_y)
             cv2.putText(image_bgr, text, (px - 26, py), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 2, cv2.LINE_AA)
@@ -297,8 +301,8 @@ def _draw_min_max(image_bgr: np.ndarray, thermal_celsius: np.ndarray, unit: str)
     cv2.drawMarker(image_bgr, (min_px, min_py), (255, 0, 0), markerType=cv2.MARKER_CROSS, markerSize=14, thickness=2)
     cv2.drawMarker(image_bgr, (max_px, max_py), (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=14, thickness=2)
 
-    min_label = f"Min {format_temperature(float(thermal_celsius[min_y, min_x]), unit)}"
-    max_label = f"Max {format_temperature(float(thermal_celsius[max_y, max_x]), unit)}"
+    min_label = f"Min {format_temperature_overlay(float(thermal_celsius[min_y, min_x]), unit)}"
+    max_label = f"Max {format_temperature_overlay(float(thermal_celsius[max_y, max_x]), unit)}"
     min_org = _choose_label_origin(image_bgr, min_px, min_py, min_label)
     max_org = _choose_label_origin(image_bgr, max_px, max_py, max_label)
     _draw_text_with_outline(image_bgr, min_label, min_org, (255, 220, 220))

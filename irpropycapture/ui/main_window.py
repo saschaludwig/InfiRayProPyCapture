@@ -9,12 +9,13 @@ import time
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QFontDatabase, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from irpropycapture.core.camera_capture import OpenCVCaptureWorker, list_opencv_camera_devices, probe_opencv_source
 from irpropycapture.core.frame_processing_worker import ProcessingResult, ProcessingSettings, ProcessingWorker
-from irpropycapture.core.image_processor import AVAILABLE_COLOR_MAPS, format_temperature
+from irpropycapture.core.image_processor import AVAILABLE_COLOR_MAPS, format_temperature_ui
 from irpropycapture.core.perf import PerfReporter
 from irpropycapture.core.image_saver import save_png
 from irpropycapture.core.state import AppState, load_state, save_state
@@ -125,6 +126,35 @@ class MainWindow(QMainWindow):
         controls_form.addRow("Manual max", self.max_spin)
         controls_box.setLayout(controls_form)
 
+        stats_box = QGroupBox("Temperature Stats")
+        stats_layout = QGridLayout()
+        self.min_value_label = QLabel("--")
+        self.max_value_label = QLabel("--")
+        self.avg_value_label = QLabel("--")
+        self.center_value_label = QLabel("--")
+        fixed_value_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        ui_point_size = self.font().pointSizeF()
+        if ui_point_size > 0:
+            fixed_value_font.setPointSizeF(ui_point_size)
+        for value_label in (
+            self.min_value_label,
+            self.max_value_label,
+            self.avg_value_label,
+            self.center_value_label,
+        ):
+            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value_label.setFont(fixed_value_font)
+            value_label.setMinimumWidth(96)
+        stats_layout.addWidget(QLabel("Min"), 0, 0)
+        stats_layout.addWidget(self.min_value_label, 0, 1)
+        stats_layout.addWidget(QLabel("Max"), 1, 0)
+        stats_layout.addWidget(self.max_value_label, 1, 1)
+        stats_layout.addWidget(QLabel("Avg"), 2, 0)
+        stats_layout.addWidget(self.avg_value_label, 2, 1)
+        stats_layout.addWidget(QLabel("Center"), 3, 0)
+        stats_layout.addWidget(self.center_value_label, 3, 1)
+        stats_box.setLayout(stats_layout)
+
         charts_box = QGroupBox("Color scale + Histogram")
         charts_layout = QVBoxLayout()
         charts_layout.addWidget(self.histogram_label)
@@ -133,7 +163,7 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout()
         side.addWidget(charts_box, stretch=1)
         side.addWidget(controls_box)
-        side.addWidget(self.info)
+        side.addWidget(stats_box)
 
         body = QHBoxLayout()
         body.addWidget(self.preview, stretch=3)
@@ -329,12 +359,11 @@ class MainWindow(QMainWindow):
             self.processing_worker = None
 
     def _update_stats(self, min_c: float, max_c: float, avg_c: float, center_c: float) -> None:
-        self.info.setText(
-            f"Min {format_temperature(min_c, self.unit_combo.currentText())} | "
-            f"Max {format_temperature(max_c, self.unit_combo.currentText())} | "
-            f"Avg {format_temperature(avg_c, self.unit_combo.currentText())} | "
-            f"Center {format_temperature(center_c, self.unit_combo.currentText())}"
-        )
+        unit = self.unit_combo.currentText()
+        self.min_value_label.setText(format_temperature_ui(min_c, unit))
+        self.max_value_label.setText(format_temperature_ui(max_c, unit))
+        self.avg_value_label.setText(format_temperature_ui(avg_c, unit))
+        self.center_value_label.setText(format_temperature_ui(center_c, unit))
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
