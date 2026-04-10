@@ -127,13 +127,15 @@ def render_thermal_image(
     manual_range_enabled: bool,
     manual_min_temp: float,
     manual_max_temp: float,
+    auto_min_temp: float | None = None,
+    auto_max_temp: float | None = None,
 ) -> np.ndarray:
     if manual_range_enabled:
         t_min = manual_min_temp
         t_max = max(manual_max_temp, manual_min_temp + 0.1)
     else:
-        t_min = float(np.min(thermal_celsius))
-        t_max = float(np.max(thermal_celsius))
+        t_min = float(np.min(thermal_celsius)) if auto_min_temp is None else float(auto_min_temp)
+        t_max = float(np.max(thermal_celsius)) if auto_max_temp is None else float(auto_max_temp)
         if t_max - t_min < 0.1:
             t_max = t_min + 0.1
 

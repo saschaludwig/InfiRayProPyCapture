@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from irpropycapture.core.perf import PerfReporter
+
 
 def _fourcc_code(tag: str) -> int:
     return cv2.VideoWriter.fourcc(*tag)
@@ -273,6 +275,7 @@ class OpenCVCaptureWorker(QThread):
         self._running = False
         self._capture: cv2.VideoCapture | None = None
         self._capture_mode: str = ""
+        self._perf = PerfReporter("CaptureWorker")
 
     def run(self) -> None:
         try:
@@ -295,12 +298,16 @@ class OpenCVCaptureWorker(QThread):
         self._running = True
         self.camera_opened.emit()
         while self._running:
+            capture_start = time.perf_counter()
             ok, frame = self._capture.read()
+            self._perf.observe("capture_read", time.perf_counter() - capture_start)
             if not ok or frame is None:
                 time.sleep(0.01)
                 continue
             try:
+                convert_start = time.perf_counter()
                 pipeline_frame = _convert_capture_to_pipeline_frame(frame)
+                self._perf.observe("frame_convert", time.perf_counter() - convert_start)
             except ValueError as exc:
                 self.error.emit(str(exc))
                 break

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 
@@ -24,6 +24,8 @@ class AppState:
     manual_max_temp: float = 40.0
     camera_index: int = 0
     camera_name: str = ""
+    last_image_save_dir: str = ""
+    last_recording_save_dir: str = ""
 
 
 def load_state() -> AppState:
@@ -31,7 +33,9 @@ def load_state() -> AppState:
         return AppState()
     try:
         payload = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return AppState(**payload)
+        valid_keys = {field.name for field in fields(AppState)}
+        filtered_payload = {key: value for key, value in payload.items() if key in valid_keys}
+        return AppState(**filtered_payload)
     except Exception:
         return AppState()
 
