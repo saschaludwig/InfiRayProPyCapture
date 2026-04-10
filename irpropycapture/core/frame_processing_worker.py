@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import time
 
 import cv2
 import numpy as np
 from PySide6.QtCore import QMutex, QMutexLocker, QThread, QWaitCondition, Signal
 
 from irpropycapture.core.image_processor import apply_orientation, format_temperature, render_thermal_image
+from irpropycapture.core.perf import PerfReporter
 from irpropycapture.core.temperature_processor import HistogramPoint, TemperatureHistoryPoint, TemperatureProcessor
 
 
@@ -44,6 +46,7 @@ class ProcessingResult:
     max_value: float
     average: float
     center: float
+    timings_ms: dict[str, float]
 
 
 class ProcessingWorker(QThread):
@@ -63,11 +66,14 @@ class ProcessingWorker(QThread):
         self._cached_history_bgr: np.ndarray | None = None
         self._cached_history_gen: int = -1
         self._cached_history_settings: tuple[str, int, int] = ("", 0, 0)
+        self._cached_hist_gradient: np.ndarray | None = None
+        self._cached_hist_gradient_key: tuple[str, int, int] = ("", 0, 0)
+        self._perf = PerfReporter("ProcessingWorker")
 
     def submit_frame(self, frame: np.ndarray, settings: ProcessingSettings) -> None:
         """Store only the latest frame/settings pair (latest-frame-wins)."""
         with QMutexLocker(self._mutex):
-            self._latest_frame = frame.copy()
+            self._latest_frame = frame
             self._latest_settings = settings
             self._wait.wakeOne()
 
@@ -101,23 +107,31 @@ class ProcessingWorker(QThread):
             self.processed.emit(processed)
 
     def _process_frame(self, frame: np.ndarray, settings: ProcessingSettings) -> ProcessingResult:
+        total_start = time.perf_counter()
+        decode_start = time.perf_counter()
         result = self._processor.get_temperatures(frame)
+        decode_elapsed = time.perf_counter() - decode_start
         thermal = result.temperatures.reshape(192, 256)
+
+        render_start = time.perf_counter()
         rendered = render_thermal_image(
             thermal,
             color_map_name=settings.color_map_name,
             manual_range_enabled=settings.manual_range_enabled,
             manual_min_temp=settings.manual_min_temp,
             manual_max_temp=settings.manual_max_temp,
+            auto_min_temp=result.min_value,
+            auto_max_temp=result.max_value,
         )
-        rendered = cv2.resize(rendered, (1024, 768), interpolation=cv2.INTER_NEAREST)
         rendered = apply_orientation(rendered, settings.orientation)
+        render_elapsed = time.perf_counter() - render_start
 
         oriented_thermal = None
         if settings.show_grid or settings.show_min_max:
             oriented_thermal = apply_orientation(thermal, settings.orientation)
 
-        export_bgr = rendered.copy()
+        overlay_start = time.perf_counter()
+        export_bgr = _resize_export(rendered)
         if oriented_thermal is not None:
             if settings.show_grid:
                 _draw_grid(export_bgr, oriented_thermal, settings.grid_density, settings.unit)
@@ -130,15 +144,24 @@ class ProcessingWorker(QThread):
                 _draw_grid(preview_bgr, oriented_thermal, settings.grid_density, settings.unit)
             if settings.show_min_max:
                 _draw_min_max(preview_bgr, oriented_thermal, settings.unit)
+        overlay_elapsed = time.perf_counter() - overlay_start
 
+        histogram_start = time.perf_counter()
+        gradient_color = self._get_histogram_gradient(
+            color_map_name=settings.color_map_name,
+            height=max(settings.histogram_height, 160),
+            width=40,
+        )
         histogram_bgr = _build_histogram_image(
             result.histogram,
             settings.unit,
-            settings.color_map_name,
             settings.histogram_width,
             settings.histogram_height,
+            gradient_color,
         )
+        histogram_elapsed = time.perf_counter() - histogram_start
 
+        history_start = time.perf_counter()
         history_key = (settings.unit, settings.history_width, settings.history_height)
         if (
             self._cached_history_bgr is not None
@@ -151,18 +174,56 @@ class ProcessingWorker(QThread):
             self._cached_history_bgr = history_bgr
             self._cached_history_gen = result.history_generation
             self._cached_history_settings = history_key
+        history_elapsed = time.perf_counter() - history_start
 
+        convert_start = time.perf_counter()
+        preview_rgb = cv2.cvtColor(preview_bgr, cv2.COLOR_BGR2RGB)
+        histogram_rgb = cv2.cvtColor(histogram_bgr, cv2.COLOR_BGR2RGB)
+        history_rgb = cv2.cvtColor(history_bgr, cv2.COLOR_BGR2RGB)
+        convert_elapsed = time.perf_counter() - convert_start
+        total_elapsed = time.perf_counter() - total_start
+        timings_ms = {
+            "decode": decode_elapsed * 1000.0,
+            "render": render_elapsed * 1000.0,
+            "overlay_resize": overlay_elapsed * 1000.0,
+            "histogram": histogram_elapsed * 1000.0,
+            "history": history_elapsed * 1000.0,
+            "rgb_convert": convert_elapsed * 1000.0,
+            "total": total_elapsed * 1000.0,
+        }
+        for stage, value_ms in timings_ms.items():
+            self._perf.observe(stage, value_ms / 1000.0)
         return ProcessingResult(
-            preview_rgb=cv2.cvtColor(preview_bgr, cv2.COLOR_BGR2RGB),
+            preview_rgb=preview_rgb,
             export_bgr=export_bgr,
-            histogram_rgb=cv2.cvtColor(histogram_bgr, cv2.COLOR_BGR2RGB),
-            history_rgb=cv2.cvtColor(history_bgr, cv2.COLOR_BGR2RGB),
+            histogram_rgb=histogram_rgb,
+            history_rgb=history_rgb,
             thermal_celsius=thermal,
             min_value=result.min_value,
             max_value=result.max_value,
             average=result.average,
             center=result.center,
+            timings_ms=timings_ms,
         )
+
+    def _get_histogram_gradient(self, color_map_name: str, height: int, width: int) -> np.ndarray:
+        key = (color_map_name, height, width)
+        if self._cached_hist_gradient is not None and key == self._cached_hist_gradient_key:
+            return self._cached_hist_gradient
+        gradient = np.linspace(255, 0, height, dtype=np.uint8).reshape(height, 1)
+        gradient = np.repeat(gradient, width, axis=1)
+        gradient_color = render_thermal_image(
+            gradient.astype(np.float32),
+            color_map_name=color_map_name,
+            manual_range_enabled=False,
+            manual_min_temp=0.0,
+            manual_max_temp=1.0,
+            auto_min_temp=0.0,
+            auto_max_temp=255.0,
+        )
+        self._cached_hist_gradient = gradient_color
+        self._cached_hist_gradient_key = key
+        return gradient_color
 
 
 def _resize_preview(image_bgr: np.ndarray, width: int, height: int, interpolation_mode: str) -> np.ndarray:
@@ -174,6 +235,15 @@ def _resize_preview(image_bgr: np.ndarray, width: int, height: int, interpolatio
     out_w = max(1, int(src_w * scale))
     out_h = max(1, int(src_h * scale))
     return cv2.resize(image_bgr, (out_w, out_h), interpolation=interpolation)
+
+
+def _resize_export(image_bgr: np.ndarray) -> np.ndarray:
+    src_h, src_w = image_bgr.shape[:2]
+    if src_h > src_w:
+        target = (768, 1024)
+    else:
+        target = (1024, 768)
+    return cv2.resize(image_bgr, target, interpolation=cv2.INTER_NEAREST)
 
 
 def _draw_grid(image_bgr: np.ndarray, thermal_celsius: np.ndarray, density: str, unit: str) -> None:
@@ -262,9 +332,9 @@ def _choose_label_origin(image_bgr: np.ndarray, anchor_x: int, anchor_y: int, te
 def _build_histogram_image(
     histogram: list[HistogramPoint],
     unit: str,
-    color_map_name: str,
     width: int,
     height: int,
+    gradient_color: np.ndarray,
 ) -> np.ndarray:
     hist_width = max(width, 220)
     hist_height = max(height, 160)
@@ -274,15 +344,6 @@ def _build_histogram_image(
     curve_x0 = 96
     curve_x1 = canvas.shape[1] - 1
 
-    gradient = np.linspace(255, 0, canvas.shape[0], dtype=np.uint8).reshape(canvas.shape[0], 1)
-    gradient = np.repeat(gradient, bar_x1 - bar_x0, axis=1)
-    gradient_color = render_thermal_image(
-        gradient.astype(np.float32),
-        color_map_name=color_map_name,
-        manual_range_enabled=False,
-        manual_min_temp=0.0,
-        manual_max_temp=1.0,
-    )
     canvas[:, bar_x0:bar_x1, :] = gradient_color
 
     if histogram:
@@ -337,8 +398,10 @@ def _build_history_image(history: list[TemperatureHistoryPoint], unit: str, widt
     y_min = _convert_temp(min(point.min_value for point in history), unit)
     y_max = _convert_temp(max(point.max_value for point in history), unit)
     y_span = max(y_max - y_min, 0.1)
-    t_min = history[0].timestamp
-    t_max = history[-1].timestamp
+    plot_width = max(32, plot_x1 - plot_x0)
+    sampled_history = _downsample_history(history, max_points=max(200, min(600, plot_width // 2)))
+    t_min = sampled_history[0].timestamp
+    t_max = sampled_history[-1].timestamp
     t_span = max(t_max - t_min, 1e-3)
 
     for i in range(1, 4):
@@ -372,10 +435,10 @@ def _build_history_image(history: list[TemperatureHistoryPoint], unit: str, widt
         cv2.putText(canvas, tick_text, (gx - 26, canvas.shape[0] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (175, 175, 175), 1, cv2.LINE_AA)
         tick_ts += tick_step
 
-    _draw_history_line(canvas, history, lambda p: p.max_value, (0, 0, 255), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
-    _draw_history_line(canvas, history, lambda p: p.min_value, (255, 0, 0), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
-    _draw_history_line(canvas, history, lambda p: p.average, (0, 255, 0), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
-    _draw_history_line(canvas, history, lambda p: p.center, (0, 165, 255), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
+    _draw_history_line(canvas, sampled_history, lambda p: p.max_value, (0, 0, 255), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
+    _draw_history_line(canvas, sampled_history, lambda p: p.min_value, (255, 0, 0), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
+    _draw_history_line(canvas, sampled_history, lambda p: p.average, (0, 255, 0), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
+    _draw_history_line(canvas, sampled_history, lambda p: p.center, (0, 165, 255), t_min, t_span, y_min, y_span, unit, plot_x0, plot_x1, plot_y0, plot_y1)
 
     legend_items = [("Max", (0, 0, 255)), ("Min", (255, 0, 0)), ("Ave", (0, 255, 0)), ("Center", (0, 165, 255))]
     lx = plot_x1 + 12
@@ -408,7 +471,11 @@ def _draw_history_line(
         y_value = _convert_temp(float(value_getter(point)), unit)
         y = int(plot_y0 + (1.0 - (y_value - y_min) / y_span) * (plot_y1 - plot_y0))
         points.append((x, y))
-    smooth = _smooth_polyline(points, iterations=2)
+    if len(points) > 700:
+        smooth = [(float(x), float(y)) for x, y in points]
+    else:
+        iterations = 1 if len(points) > 300 else 2
+        smooth = _smooth_polyline(points, iterations=iterations)
     cv2.polylines(canvas, [np.array(smooth, dtype=np.int32)], False, color, 2, cv2.LINE_AA)
 
 
@@ -435,3 +502,16 @@ def _smooth_polyline(points: list[tuple[int, int]], iterations: int = 2) -> list
         refined.append(output[-1])
         output = refined
     return output
+
+
+def _downsample_history(history: list[TemperatureHistoryPoint], max_points: int) -> list[TemperatureHistoryPoint]:
+    if len(history) <= max_points or max_points < 2:
+        return history
+    step = len(history) / float(max_points - 1)
+    sampled: list[TemperatureHistoryPoint] = []
+    index = 0.0
+    while int(index) < len(history) - 1:
+        sampled.append(history[int(index)])
+        index += step
+    sampled.append(history[-1])
+    return sampled

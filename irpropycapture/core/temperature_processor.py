@@ -51,9 +51,7 @@ class TemperatureProcessor:
         if raw.shape[0] < self.height or raw.shape[1] < self.width * 2:
             raise ValueError(f"Unexpected frame shape: {raw.shape}")
 
-        candidates = self._build_candidates(raw)
-        best = max(candidates, key=lambda item: item["score"])
-        temperatures = best["temps"]
+        temperatures = self._decode_best_candidate(raw)
 
         min_v = float(np.min(temperatures))
         max_v = float(np.max(temperatures))
@@ -77,23 +75,32 @@ class TemperatureProcessor:
             history_generation=self._history_generation,
         )
 
-    def _build_candidates(self, raw: np.ndarray) -> list[dict]:
+    def _decode_best_candidate(self, raw: np.ndarray) -> np.ndarray:
         rows_192 = raw[192 : 192 + self.height, : self.width * 2]
-        candidates: list[dict] = []
         packed = rows_192.reshape(self.height, self.width, 2)
         be = (packed[:, :, 0].astype(np.uint16) << 8) | packed[:, :, 1].astype(np.uint16)
         le = (packed[:, :, 1].astype(np.uint16) << 8) | packed[:, :, 0].astype(np.uint16)
-        candidates.append(self._candidate_entry("row192_be", be))
-        candidates.append(self._candidate_entry("row192_le", le))
-        return candidates
+        be_score = self._sampled_score(be)
+        le_score = self._sampled_score(le)
+        # When scores are close, decode both fully to avoid accuracy regressions.
+        if abs(be_score - le_score) < 1.5:
+            be_temps = self._decode_values_to_celsius(be)
+            le_temps = self._decode_values_to_celsius(le)
+            be_full_score = self._score(float(np.min(be_temps)), float(np.max(be_temps)), float(np.mean(be_temps)))
+            le_full_score = self._score(float(np.min(le_temps)), float(np.max(le_temps)), float(np.mean(le_temps)))
+            return be_temps if be_full_score >= le_full_score else le_temps
+        if be_score > le_score:
+            return self._decode_values_to_celsius(be)
+        return self._decode_values_to_celsius(le)
 
-    def _candidate_entry(self, name: str, values: np.ndarray) -> dict:
-        temps = (values.astype(np.float32).reshape(-1) / 64.0) - 273.2
-        min_v = float(np.min(temps))
-        max_v = float(np.max(temps))
-        avg_v = float(np.mean(temps))
-        score = self._score(min_v, max_v, avg_v)
-        return {"name": name, "temps": temps, "min": min_v, "max": max_v, "avg": avg_v, "score": score}
+    def _sampled_score(self, values: np.ndarray) -> float:
+        sampled = values[::4, ::4]
+        temps = self._decode_values_to_celsius(sampled)
+        return self._score(float(np.min(temps)), float(np.max(temps)), float(np.mean(temps)))
+
+    @staticmethod
+    def _decode_values_to_celsius(values: np.ndarray) -> np.ndarray:
+        return (values.astype(np.float32).reshape(-1) / 64.0) - 273.2
 
     @staticmethod
     def _score(min_v: float, max_v: float, avg_v: float) -> float:

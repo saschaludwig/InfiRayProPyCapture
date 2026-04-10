@@ -65,6 +65,7 @@ Original repository:
 - On first run, the OS may request camera permission.
 - UI state is stored in `~/.irpropycapture_state.json`.
 - If no image appears, verify camera access permissions and that the camera is not used by another application.
+- Optional performance logs can be enabled with `IRPRO_PY_CAPTURE_PERF=1`.
 
 ## Platform Notes
 
