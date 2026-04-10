@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -32,15 +33,18 @@ class TemperatureResult:
     center: float
     histogram: list[HistogramPoint]
     temperature_history: list[TemperatureHistoryPoint]
+    history_generation: int
 
 
 class TemperatureProcessor:
     def __init__(self) -> None:
         self.width = 256
         self.height = 192
-        self.temperature_history: list[TemperatureHistoryPoint] = []
+        self.temperature_history: deque[TemperatureHistoryPoint] = deque()
         self.history_update_interval = 0.1
         self.max_history_seconds = 60.0
+        self._history_generation: int = 0
+        self._last_history_snapshot: list[TemperatureHistoryPoint] = []
 
     def get_temperatures(self, frame_bgr: np.ndarray, start_row: int = 192) -> TemperatureResult:
         raw = frame_bgr
@@ -57,8 +61,11 @@ class TemperatureProcessor:
         center_i = self.width * (self.height // 2) + (self.width // 2)
         center_v = float(temperatures[center_i])
         histogram = self.compute_histogram(temperatures, min_v, max_v, bins=50)
+        gen_before = self._history_generation
         if min_v > -20.0:
             self.update_temperature_history(min_v, max_v, avg_v, center_v)
+        if self._history_generation != gen_before:
+            self._last_history_snapshot = list(self.temperature_history)
         return TemperatureResult(
             temperatures=temperatures,
             min_value=min_v,
@@ -66,7 +73,8 @@ class TemperatureProcessor:
             average=avg_v,
             center=center_v,
             histogram=histogram,
-            temperature_history=list(self.temperature_history),
+            temperature_history=self._last_history_snapshot,
+            history_generation=self._history_generation,
         )
 
     def _build_candidates(self, raw: np.ndarray) -> list[dict]:
@@ -131,4 +139,5 @@ class TemperatureProcessor:
             )
         )
         while len(self.temperature_history) >= 2 and (self.temperature_history[-1].timestamp - self.temperature_history[0].timestamp) > self.max_history_seconds:
-            self.temperature_history.pop(0)
+            self.temperature_history.popleft()
+        self._history_generation += 1

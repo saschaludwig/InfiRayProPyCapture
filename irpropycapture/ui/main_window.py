@@ -27,15 +27,11 @@ from PySide6.QtWidgets import (
 )
 
 from irpropycapture.core.camera_capture import OpenCVCaptureWorker, list_opencv_camera_devices, probe_opencv_source
-from irpropycapture.core.image_processor import (
-    AVAILABLE_COLOR_MAPS,
-    apply_orientation,
-    format_temperature,
-    render_thermal_image,
-)
+from irpropycapture.core.frame_processing_worker import ProcessingResult, ProcessingSettings, ProcessingWorker
+from irpropycapture.core.image_processor import AVAILABLE_COLOR_MAPS, format_temperature, render_thermal_image
 from irpropycapture.core.image_saver import save_png
 from irpropycapture.core.state import AppState, load_state, save_state
-from irpropycapture.core.temperature_processor import HistogramPoint, TemperatureHistoryPoint, TemperatureProcessor
+from irpropycapture.core.temperature_processor import HistogramPoint, TemperatureHistoryPoint
 from irpropycapture.core.video_recorder import VideoRecorder
 
 
@@ -46,7 +42,8 @@ class MainWindow(QMainWindow):
         self.resize(1300, 820)
 
         self.capture_worker: OpenCVCaptureWorker | None = None
-        self.processor = TemperatureProcessor()
+        self.processing_worker: ProcessingWorker | None = None
+        self._gui_busy = False
         self.recorder = VideoRecorder()
         self.available_camera_items: list[tuple[str, int, str, int, int, float]] = []
         self.state: AppState = load_state()
@@ -166,9 +163,7 @@ class MainWindow(QMainWindow):
         self.refresh_camera_list()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        if self.capture_worker is not None:
-            self.capture_worker.stop()
-            self.capture_worker = None
+        self._stop_workers()
         if self.recorder.is_recording:
             self.recorder.stop()
         self._persist_state()
@@ -232,8 +227,7 @@ class MainWindow(QMainWindow):
 
     def toggle_capture(self) -> None:
         if self.capture_worker is not None:
-            self.capture_worker.stop()
-            self.capture_worker = None
+            self._stop_workers()
             self.start_button.setText("Start Camera")
             return
 
@@ -251,6 +245,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Camera Error", probe_msg)
             return
 
+        self.processing_worker = ProcessingWorker()
+        self.processing_worker.processed.connect(self._on_processed_frame)
+        self.processing_worker.error.connect(lambda msg: self.preview.setText(msg))
+        self.processing_worker.start()
+
         self.capture_worker = OpenCVCaptureWorker(index, width, height, int(fps))
         self.capture_worker.frame_ready.connect(self.on_frame_ready)
         self.capture_worker.error.connect(lambda msg: QMessageBox.critical(self, "Capture Error", msg))
@@ -259,49 +258,58 @@ class MainWindow(QMainWindow):
         self._persist_state()
 
     def on_frame_ready(self, frame: np.ndarray) -> None:
+        if self.processing_worker is None:
+            return
+        settings = self._current_processing_settings()
+        self.processing_worker.submit_frame(frame, settings)
+
+    def _current_processing_settings(self) -> ProcessingSettings:
+        target_size = self.preview.size()
+        return ProcessingSettings(
+            color_map_name=self.color_map_combo.currentText(),
+            manual_range_enabled=self.manual_range_checkbox.isChecked(),
+            manual_min_temp=float(self.min_spin.value()),
+            manual_max_temp=float(self.max_spin.value()),
+            preview_interpolation=self.preview_interpolation_combo.currentText(),
+            orientation=self.orientation_combo.currentText(),
+            show_grid=self.grid_checkbox.isChecked(),
+            show_min_max=self.min_max_checkbox.isChecked(),
+            grid_density=self.grid_density_combo.currentText(),
+            unit=self.unit_combo.currentText(),
+            preview_width=target_size.width(),
+            preview_height=target_size.height(),
+            histogram_width=max(self.histogram_label.width(), 220),
+            histogram_height=max(self.histogram_label.height(), 160),
+            history_width=max(self.history_label.width(), 960),
+            history_height=max(self.history_label.height(), 180),
+        )
+
+    def _on_processed_frame(self, result_obj: object) -> None:
+        if self._gui_busy:
+            return
+        result = result_obj
+        if not isinstance(result, ProcessingResult):
+            return
+        self._gui_busy = True
         try:
-            result = self.processor.get_temperatures(frame)
-            thermal = result.temperatures.reshape(192, 256)
-            self.last_temps_celsius = thermal
-
-            rendered = render_thermal_image(
-                thermal,
-                color_map_name=self.color_map_combo.currentText(),
-                manual_range_enabled=self.manual_range_checkbox.isChecked(),
-                manual_min_temp=float(self.min_spin.value()),
-                manual_max_temp=float(self.max_spin.value()),
-            )
-            rendered = cv2.resize(rendered, (1024, 768), interpolation=cv2.INTER_NEAREST)
-            orientation = self.orientation_combo.currentText()
-            rendered = apply_orientation(rendered, orientation)
-
-            oriented_thermal = None
-            if self.grid_checkbox.isChecked() or self.min_max_checkbox.isChecked():
-                # Keep grid/min-max labels at fixed screen size by drawing them
-                # after preview scaling in _set_preview_image.
-                oriented_thermal = apply_orientation(thermal, orientation)
-
-            # Build an export/record frame that includes temperature overlays.
-            rendered_with_overlays = rendered.copy()
-            if oriented_thermal is not None:
-                if self.grid_checkbox.isChecked():
-                    self._draw_grid_fixed_screen_size(rendered_with_overlays, oriented_thermal)
-                if self.min_max_checkbox.isChecked():
-                    self._draw_min_max_fixed_screen_size(rendered_with_overlays, oriented_thermal)
-
-            self.last_render_bgr = rendered_with_overlays
-            self._set_preview_image(
-                rendered,
-                overlay_thermal=oriented_thermal if self.grid_checkbox.isChecked() else None,
-                overlay_min_max=oriented_thermal if self.min_max_checkbox.isChecked() else None,
-            )
+            self.last_render_bgr = result.export_bgr
+            self.last_temps_celsius = result.thermal_celsius
+            self.preview.setPixmap(self._pixmap_from_rgb(result.preview_rgb))
+            self.histogram_label.setPixmap(self._pixmap_from_rgb(result.histogram_rgb))
+            self.history_label.setPixmap(self._pixmap_from_rgb(result.history_rgb))
             self._update_stats(result.min_value, result.max_value, result.average, result.center)
-            self._update_histogram(result.histogram)
-            self._update_history(result.temperature_history)
             if self.recorder.is_recording:
-                self.recorder.write_frame(rendered_with_overlays)
-        except Exception as exc:
-            self.preview.setText(f"Decode error: {exc}")
+                self.recorder.write_frame(result.export_bgr)
+        finally:
+            self._gui_busy = False
+
+    def _stop_workers(self) -> None:
+        if self.capture_worker is not None:
+            self.capture_worker.stop()
+            self.capture_worker = None
+        if self.processing_worker is not None:
+            self.processing_worker.stop()
+            self.processing_worker = None
 
     def _set_preview_image(
         self,
@@ -691,6 +699,12 @@ class MainWindow(QMainWindow):
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         h, w, _ = rgb.shape
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
+        return QPixmap.fromImage(qimg)
+
+    @staticmethod
+    def _pixmap_from_rgb(image_rgb: np.ndarray) -> QPixmap:
+        h, w, _ = image_rgb.shape
+        qimg = QImage(image_rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
         return QPixmap.fromImage(qimg)
 
     def save_snapshot(self) -> None:
