@@ -26,6 +26,12 @@ class AppState:
     camera_name: str = ""
     last_image_save_dir: str = ""
     last_recording_save_dir: str = ""
+    # Last main window frame geometry (client area + frame). Zero size = use defaults on startup.
+    window_width: int = 0
+    window_height: int = 0
+    # Top-left of the window frame; negative = position was never saved, center on primary screen.
+    window_x: int = -1
+    window_y: int = -1
 
 
 def load_state() -> AppState:

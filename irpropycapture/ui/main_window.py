@@ -8,8 +8,8 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFontDatabase, QImage, QPixmap
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QFontDatabase, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,26 +29,35 @@ from PySide6.QtWidgets import (
 )
 
 from irpropycapture.core.camera_capture import OpenCVCaptureWorker, list_opencv_camera_devices, probe_opencv_source
-from irpropycapture.core.frame_processing_worker import ProcessingResult, ProcessingSettings, ProcessingWorker
+from irpropycapture.core.frame_processing_worker import (
+    MIN_HISTOGRAM_RENDER_HEIGHT,
+    MIN_HISTORY_RENDER_HEIGHT,
+    ProcessingResult,
+    ProcessingSettings,
+    ProcessingWorker,
+)
 from irpropycapture.core.image_processor import AVAILABLE_COLOR_MAPS, format_temperature_ui
 from irpropycapture.core.perf import PerfReporter
 from irpropycapture.core.image_saver import save_png
 from irpropycapture.core.state import AppState, load_state, save_state
 from irpropycapture.core.video_recorder import VideoRecorder
 
+# Layout caps: histogram chrome + plot; temperature history strip under the main row.
+MAX_CHARTS_BOX_HEIGHT_PX = 250
+MAX_HISTORY_WIDGET_HEIGHT_PX = 200
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("IrProPyCapture")
-        self.resize(1300, 820)
+        self.state: AppState = load_state()
 
         self.capture_worker: OpenCVCaptureWorker | None = None
         self.processing_worker: ProcessingWorker | None = None
         self._gui_busy = False
         self.recorder = VideoRecorder()
         self.available_camera_items: list[tuple[str, int, str, int, int, float]] = []
-        self.state: AppState = load_state()
         self.last_render_bgr: np.ndarray | None = None
         self.last_temps_celsius: np.ndarray | None = None
         self._last_preview_rgb: np.ndarray | None = None
@@ -61,20 +70,24 @@ class MainWindow(QMainWindow):
 
         self.preview = QLabel("No image")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumSize(320, 240)
+        self.preview.setMinimumSize(320, 200)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.info = QLabel("No data")
         self.info.setWordWrap(True)
         self.histogram_label = QLabel()
         self.history_label = QLabel()
-        self.histogram_label.setMinimumHeight(160)
+        self.histogram_label.setMinimumHeight(MIN_HISTOGRAM_RENDER_HEIGHT)
         self.histogram_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.history_label.setMinimumHeight(180)
-        # Keep horizontal size flexible even after large pixmaps were rendered.
-        # Otherwise QLabel size hints can prevent the window from shrinking again.
-        self.history_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.history_label.setMinimumHeight(MIN_HISTORY_RENDER_HEIGHT)
+        self.history_label.setMaximumHeight(MAX_HISTORY_WIDGET_HEIGHT_PX)
+        # Horizontal: flexible so wide history pixmaps do not block shrinking the window.
         self.history_label.setMinimumWidth(0)
+        # Vertical: share a little extra root height (capped); most growth stays on the preview row.
+        self.history_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.MinimumExpanding,
+        )
         self.history_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.camera_combo = QComboBox()
@@ -114,6 +127,9 @@ class MainWindow(QMainWindow):
 
         controls_box = QGroupBox("Controls")
         controls_form = QFormLayout()
+        controls_form.setVerticalSpacing(2)
+        controls_form.setHorizontalSpacing(6)
+        controls_form.setContentsMargins(8, 4, 8, 4)
         controls_form.addRow("Color map", self.color_map_combo)
         controls_form.addRow("Temperature unit", self.unit_combo)
         controls_form.addRow("Preview interpolation", self.preview_interpolation_combo)
@@ -128,6 +144,9 @@ class MainWindow(QMainWindow):
 
         stats_box = QGroupBox("Temperature Stats")
         stats_layout = QGridLayout()
+        stats_layout.setVerticalSpacing(0)
+        stats_layout.setHorizontalSpacing(8)
+        stats_layout.setContentsMargins(8, 2, 8, 4)
         self.min_value_label = QLabel("--")
         self.max_value_label = QLabel("--")
         self.avg_value_label = QLabel("--")
@@ -156,14 +175,20 @@ class MainWindow(QMainWindow):
         stats_box.setLayout(stats_layout)
 
         charts_box = QGroupBox("Color scale + Histogram")
+        charts_box.setMaximumHeight(MAX_CHARTS_BOX_HEIGHT_PX)
         charts_layout = QVBoxLayout()
+        charts_layout.setContentsMargins(4, 4, 4, 4)
         charts_layout.addWidget(self.histogram_label)
         charts_box.setLayout(charts_layout)
 
+        # Stats directly under the histogram so Min/Max/Avg/Center stay visible on short displays.
         side = QVBoxLayout()
+        side.setSpacing(4)
+        # Grow the histogram area with the sidebar height, but never above MAX_CHARTS_BOX_HEIGHT_PX.
         side.addWidget(charts_box, stretch=1)
-        side.addWidget(controls_box)
-        side.addWidget(stats_box)
+        side.addWidget(stats_box, stretch=0)
+        side.addWidget(controls_box, stretch=0)
+        side.addStretch(1)
 
         body = QHBoxLayout()
         body.addWidget(self.preview, stretch=3)
@@ -172,11 +197,15 @@ class MainWindow(QMainWindow):
         side_widget.setMaximumWidth(340)
         body.addWidget(side_widget, stretch=1)
 
+        history_title = QLabel("Temperature history")
+
         root = QVBoxLayout()
+        root.setSpacing(4)
         root.addLayout(top)
-        root.addLayout(body, stretch=1)
-        root.addWidget(QLabel("Temperature history"))
-        root.addWidget(self.history_label)
+        # Most vertical growth goes to the preview row; history gets a smaller share (max 200px).
+        root.addLayout(body, stretch=5)
+        root.addWidget(history_title, stretch=0)
+        root.addWidget(self.history_label, stretch=1)
         container = QWidget()
         container.setLayout(root)
         self.setCentralWidget(container)
@@ -197,6 +226,87 @@ class MainWindow(QMainWindow):
         self.max_spin.valueChanged.connect(self._schedule_state_persist)
 
         self.refresh_camera_list()
+
+        self._apply_initial_window_geometry()
+
+    def _apply_initial_window_geometry(self) -> None:
+        """Resize and place the window from saved state if it fits the available desktop."""
+        min_hint = self.minimumSizeHint()
+        min_w = max(min_hint.width(), 320)
+        min_h = max(min_hint.height(), 200)
+
+        sw, sh = self.state.window_width, self.state.window_height
+        sx, sy = self.state.window_x, self.state.window_y
+
+        if sw <= 0 or sh <= 0:
+            screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                self.resize(1260, 780)
+                return
+            ag = screen.availableGeometry()
+            self.resize(min(1300, ag.width()), min(820, max(min_h, ag.height() - 48)))
+            frame = self.frameGeometry()
+            frame.moveCenter(ag.center())
+            self.move(frame.topLeft())
+            return
+
+        screen = None
+        if sx >= 0 and sy >= 0:
+            screen = QGuiApplication.screenAt(QPoint(sx, sy))
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1260, 780)
+            return
+
+        ag = screen.availableGeometry()
+        fw = max(min_w, min(sw, ag.width()))
+        fh = max(min_h, min(sh, ag.height()))
+        self.resize(fw, fh)
+
+        if sx >= 0 and sy >= 0:
+            self.move(sx, sy)
+        else:
+            frame = self.frameGeometry()
+            frame.moveCenter(ag.center())
+            self.move(frame.topLeft())
+
+        self._ensure_window_fits_available_geometry()
+
+    def _ensure_window_fits_available_geometry(self) -> None:
+        """Nudge and shrink the window so it lies fully inside one screen's available rectangle."""
+        screen = QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        ag = screen.availableGeometry()
+        frame = self.frameGeometry()
+
+        fw = min(frame.width(), ag.width())
+        fh = min(frame.height(), ag.height())
+        fw = max(fw, self.minimumWidth())
+        fh = max(fh, self.minimumHeight())
+        if fw != frame.width() or fh != frame.height():
+            self.resize(fw, fh)
+            frame = self.frameGeometry()
+
+        nx, ny = frame.x(), frame.y()
+        if frame.right() > ag.right():
+            nx = ag.right() - frame.width()
+        if frame.bottom() > ag.bottom():
+            ny = ag.bottom() - frame.height()
+        if nx < ag.left():
+            nx = ag.left()
+        if ny < ag.top():
+            ny = ag.top()
+        if (nx, ny) != (frame.x(), frame.y()):
+            self.move(nx, ny)
+
+    def _persist_window_geometry_to_state(self) -> None:
+        frame = self.frameGeometry()
+        self.state.window_width = frame.width()
+        self.state.window_height = frame.height()
+        self.state.window_x = frame.x()
+        self.state.window_y = frame.y()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self._stop_workers()
@@ -233,6 +343,7 @@ class MainWindow(QMainWindow):
             _, idx, name, _, _, _ = self.available_camera_items[pos]
             self.state.camera_index = idx
             self.state.camera_name = name
+        self._persist_window_geometry_to_state()
         save_state(self.state)
 
     def _schedule_state_persist(self) -> None:
@@ -318,9 +429,12 @@ class MainWindow(QMainWindow):
             preview_width=target_size.width(),
             preview_height=target_size.height(),
             histogram_width=max(self.histogram_label.width(), 220),
-            histogram_height=max(self.histogram_label.height(), 160),
+            histogram_height=max(self.histogram_label.height(), MIN_HISTOGRAM_RENDER_HEIGHT),
             history_width=max(self.history_label.width(), 960),
-            history_height=max(self.history_label.height(), 180),
+            history_height=max(
+                min(self.history_label.height(), MAX_HISTORY_WIDGET_HEIGHT_PX),
+                MIN_HISTORY_RENDER_HEIGHT,
+            ),
         )
 
     def _on_processed_frame(self, result_obj: object) -> None:
@@ -365,8 +479,13 @@ class MainWindow(QMainWindow):
         self.avg_value_label.setText(format_temperature_ui(avg_c, unit))
         self.center_value_label.setText(format_temperature_ui(center_c, unit))
 
+    def moveEvent(self, event) -> None:  # type: ignore[override]
+        super().moveEvent(event)
+        self._schedule_state_persist()
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        self._schedule_state_persist()
         if self._last_preview_rgb is not None:
             self.preview.setPixmap(self._pixmap_from_rgb(self._last_preview_rgb))
         if self._last_histogram_rgb is not None:

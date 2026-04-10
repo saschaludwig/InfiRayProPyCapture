@@ -18,6 +18,10 @@ from irpropycapture.core.image_processor import (
 from irpropycapture.core.perf import PerfReporter
 from irpropycapture.core.temperature_processor import HistogramPoint, TemperatureHistoryPoint, TemperatureProcessor
 
+# Lower bounds for chart rendering; keep aligned with MainWindow widget minimums.
+MIN_HISTOGRAM_RENDER_HEIGHT = 120
+MIN_HISTORY_RENDER_HEIGHT = 120
+
 
 @dataclass
 class ProcessingSettings:
@@ -153,7 +157,7 @@ class ProcessingWorker(QThread):
         histogram_start = time.perf_counter()
         gradient_color = self._get_histogram_gradient(
             color_map_name=settings.color_map_name,
-            height=max(settings.histogram_height, 160),
+            height=max(settings.histogram_height, MIN_HISTOGRAM_RENDER_HEIGHT),
             width=40,
         )
         histogram_bgr = _build_histogram_image(
@@ -341,7 +345,7 @@ def _build_histogram_image(
     gradient_color: np.ndarray,
 ) -> np.ndarray:
     hist_width = max(width, 220)
-    hist_height = max(height, 160)
+    hist_height = max(height, MIN_HISTOGRAM_RENDER_HEIGHT)
     canvas = np.zeros((hist_height, hist_width, 3), dtype=np.uint8)
     bar_x0 = 46
     bar_x1 = 86
@@ -384,7 +388,7 @@ def _build_histogram_image(
 
 def _build_history_image(history: list[TemperatureHistoryPoint], unit: str, width: int, height: int) -> np.ndarray:
     canvas_width = max(width, 960)
-    canvas_height = max(height, 180)
+    canvas_height = max(height, MIN_HISTORY_RENDER_HEIGHT)
     canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
     left_margin = 56
     right_margin = 96
