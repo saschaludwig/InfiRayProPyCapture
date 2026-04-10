@@ -14,6 +14,7 @@ AVAILABLE_COLOR_MAPS = [
     "Black-Hot",
     "White-Hot",
     "Rainbow",
+    "Rainbow-High-Contrast",
     "Parula",
     "Viridis",
     "Plasma",
@@ -54,6 +55,17 @@ _CUSTOM_CONTROL_POINTS = {
     ],
     "White-Hot": [
         (0.0, 0.0, 0.0),
+        (1.0, 1.0, 1.0),
+    ],
+    "Rainbow-High-Contrast": [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 1.0),
+        (0.0, 0.0, 0.5),
+        (0.0, 1.0, 1.0),
+        (0.0, 0.5, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.5, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
         (1.0, 1.0, 1.0),
     ],
 }
