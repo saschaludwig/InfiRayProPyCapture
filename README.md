@@ -1,4 +1,4 @@
-# IrProPyCapture
+# InfiRay P2 Pro Python Capture
 
 Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop UI.
 
