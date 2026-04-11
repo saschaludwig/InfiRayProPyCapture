@@ -18,6 +18,9 @@ Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop 
 - MP4 recording export
 - Persistent UI state (camera selection, colormap, controls, window size)
 
+## Screenshot ##
+<img width="1187" height="1342" alt="screenshot" src="https://github.com/user-attachments/assets/374d06d2-63d7-4c20-9f1c-9e964ec39821" />
+
 ## Requirements
 
 - macOS, Linux, or Windows (OpenCV camera backend)
