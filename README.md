@@ -1,27 +1,27 @@
 # IrProPyCapture
 
-Python port of the thermal camera viewer with a PySide6 desktop UI.
+Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop UI.
 
 ## Features
 
 - Live thermal stream from USB camera via OpenCV (`cv2.VideoCapture`)
-- Colormap rendering (`Turbo`, `Inferno`, `Jet`, `Hot`, `Rainbow`, `Parula`, `Viridis`, `Plasma`, `Coolwarm`, `Magma`, `Twilight`, `Autumn`, `Spring`, `Winter`, `HSV`, `Cubehelix`, `Cividis`, `Bone`)
+- Colormap rendering: `Turbo`, `Inferno`, `Jet`, `Hot`, `Black-Hot`, `White-Hot`, `Rainbow`, `Rainbow-High-Contrast`, `Parula`, `Viridis`, `Plasma`, `Coolwarm`, `Magma`, `Twilight`, `Autumn`, `Spring`, `Winter`, `HSV`, `Cubehelix`, `Cividis`, `Bone`
 - Temperature stats: Min, Max, Average, Center
 - Optional temperature grid overlay
 - Optional min/max markers with smart labels
 - Preview scaling with aspect ratio lock and selectable interpolation (`Fast`/`Smooth`)
 - Histogram with active colormap scale
-- Bottom temperature history chart (Max/Min/Ave/Center) with time axis
+- 1 minute temperature history chart (Max/Min/Ave/Center)
 - Manual temperature range (optional)
 - Orientation controls (rotate/flip)
 - PNG snapshot export
 - MP4 recording export
-- Persistent UI state (camera selection, colormap, controls)
+- Persistent UI state (camera selection, colormap, controls, window size)
 
 ## Requirements
 
 - macOS, Linux, or Windows (OpenCV camera backend)
-- Python 3.11+ (3.14 also works)
+- Python 3.11+
 
 Python dependencies are listed in `requirements.txt`.
 
