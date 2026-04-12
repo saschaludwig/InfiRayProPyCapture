@@ -17,6 +17,15 @@ def _fourcc_code(tag: str) -> int:
     return cv2.VideoWriter.fourcc(*tag)
 
 
+def _try_set_capture_fourcc(cap: cv2.VideoCapture, fourcc_tag: str) -> bool:
+    """Set CAP_PROP_FOURCC; MSMF on Windows often raises cv2.error instead of failing quietly."""
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, float(_fourcc_code(fourcc_tag[:4].ljust(4))))
+        return True
+    except cv2.error:
+        return False
+
+
 def _open_capture(camera_index: int, width: int, height: int, fps: int) -> tuple[cv2.VideoCapture | None, str]:
     """Open capture with platform-specific backend strategy."""
     system = platform.system()
@@ -251,7 +260,9 @@ def probe_opencv_source(
     fourcc_candidates = _fourcc_candidates_for_mode(mode)
     last_error = err
     for fourcc_tag in fourcc_candidates:
-        cap.set(cv2.CAP_PROP_FOURCC, float(_fourcc_code(fourcc_tag[:4].ljust(4))))
+        if not _try_set_capture_fourcc(cap, fourcc_tag):
+            last_error = f"{fourcc_tag.strip() or fourcc_tag}: FOURCC not supported by backend"
+            continue
         ok, err = _read_convertible_frame(cap, effective_attempts)
         if ok:
             cap.release()
@@ -286,7 +297,7 @@ class OpenCVCaptureWorker(QThread):
             _configure_capture_for_raw(self._capture, self.width, self.height, self.fps)
             if not self._capture_mode.startswith("ffmpeg-"):
                 for fourcc_tag in _fourcc_candidates_for_mode(self._capture_mode):
-                    self._capture.set(cv2.CAP_PROP_FOURCC, float(_fourcc_code(fourcc_tag[:4].ljust(4))))
+                    _try_set_capture_fourcc(self._capture, fourcc_tag)
         except Exception as exc:
             self.error.emit(f"Camera start failed: {exc}")
             return
