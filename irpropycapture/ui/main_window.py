@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from pathlib import Path
+import threading
 import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QGuiApplication, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -29,6 +31,13 @@ from PySide6.QtWidgets import (
 )
 
 from irpropycapture.core.camera_capture import OpenCVCaptureWorker, list_opencv_camera_devices, probe_opencv_source
+from irpropycapture.core.camera_controls import (
+    RANGE_MODE_HIGH,
+    RANGE_MODE_LOW,
+    TemperatureRange,
+    apply_temperature_range,
+    camera_control_startup_check,
+)
 from irpropycapture.core.frame_processing_worker import (
     MIN_HISTOGRAM_RENDER_HEIGHT,
     MIN_HISTORY_RENDER_HEIGHT,
@@ -48,6 +57,8 @@ MAX_HISTORY_WIDGET_HEIGHT_PX = 200
 
 
 class MainWindow(QMainWindow):
+    camera_range_apply_finished = Signal(int, bool, str)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("IrProPyCapture")
@@ -67,6 +78,18 @@ class MainWindow(QMainWindow):
         self._state_save_timer = QTimer(self)
         self._state_save_timer.setSingleShot(True)
         self._state_save_timer.timeout.connect(self._persist_state)
+        self.camera_range_apply_finished.connect(self._on_camera_temperature_range_applied)
+        self._camera_range_apply_in_progress = False
+        self._pending_camera_temperature_range: int | None = None
+        self._show_temperature_range_switch_overlay = False
+        self._received_frame_count = 0
+        self._wait_for_stream_resume_after_range_switch = False
+        self._range_switch_completed_at: float | None = None
+        self._processed_frames_since_range_switch = 0
+        self._required_processed_frames_after_range_switch = 3
+        self._range_switch_min_overlay_seconds_after_complete = 3.2
+        self._last_auto_range_min_c: float | None = None
+        self._last_auto_range_max_c: float | None = None
 
         self.preview = QLabel("No image")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -110,6 +133,10 @@ class MainWindow(QMainWindow):
         self.grid_density_combo.addItems(["Low", "Medium", "High"])
 
         self.manual_range_checkbox = QCheckBox("Manual range")
+        self.manual_set_to_current_button = QPushButton("Set to current")
+        self.camera_temperature_range_combo = QComboBox()
+        self.camera_temperature_range_combo.addItem(TemperatureRange.LOW.value, RANGE_MODE_LOW)
+        self.camera_temperature_range_combo.addItem(TemperatureRange.HIGH.value, RANGE_MODE_HIGH)
         self.min_spin = QSpinBox()
         self.max_spin = QSpinBox()
         for spin in (self.min_spin, self.max_spin):
@@ -137,7 +164,14 @@ class MainWindow(QMainWindow):
         controls_form.addRow(self.grid_checkbox)
         controls_form.addRow(self.min_max_checkbox)
         controls_form.addRow("Grid density", self.grid_density_combo)
-        controls_form.addRow(self.manual_range_checkbox)
+        controls_form.addRow("Camera temperature range", self.camera_temperature_range_combo)
+        manual_range_row = QWidget()
+        manual_range_layout = QHBoxLayout(manual_range_row)
+        manual_range_layout.setContentsMargins(0, 0, 0, 0)
+        manual_range_layout.setSpacing(6)
+        manual_range_layout.addWidget(self.manual_range_checkbox)
+        manual_range_layout.addWidget(self.manual_set_to_current_button)
+        controls_form.addRow(manual_range_row)
         controls_form.addRow("Manual min", self.min_spin)
         controls_form.addRow("Manual max", self.max_spin)
         controls_box.setLayout(controls_form)
@@ -209,6 +243,7 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(root)
         self.setCentralWidget(container)
+        self._run_camera_control_startup_check()
 
         self.refresh_button.clicked.connect(self.refresh_camera_list)
         self.start_button.clicked.connect(self.toggle_capture)
@@ -221,7 +256,9 @@ class MainWindow(QMainWindow):
         self.grid_checkbox.toggled.connect(self._schedule_state_persist)
         self.min_max_checkbox.toggled.connect(self._schedule_state_persist)
         self.grid_density_combo.currentTextChanged.connect(self._schedule_state_persist)
+        self.camera_temperature_range_combo.currentTextChanged.connect(self._on_camera_temperature_range_changed)
         self.manual_range_checkbox.toggled.connect(self._schedule_state_persist)
+        self.manual_set_to_current_button.clicked.connect(self._set_manual_range_to_current)
         self.min_spin.valueChanged.connect(self._schedule_state_persist)
         self.max_spin.valueChanged.connect(self._schedule_state_persist)
 
@@ -323,6 +360,9 @@ class MainWindow(QMainWindow):
         self.min_max_checkbox.setChecked(self.state.show_min_max_markers)
         self.orientation_combo.setCurrentText(self.state.orientation)
         self.grid_density_combo.setCurrentText(self.state.grid_density)
+        target_range_mode = RANGE_MODE_HIGH if self.state.camera_temperature_range_mode else RANGE_MODE_LOW
+        target_index = self.camera_temperature_range_combo.findData(target_range_mode)
+        self.camera_temperature_range_combo.setCurrentIndex(target_index if target_index >= 0 else 0)
         self.manual_range_checkbox.setChecked(self.state.manual_range_enabled)
         self.min_spin.setValue(int(self.state.manual_min_temp))
         self.max_spin.setValue(int(self.state.manual_max_temp))
@@ -335,6 +375,8 @@ class MainWindow(QMainWindow):
         self.state.show_min_max_markers = self.min_max_checkbox.isChecked()
         self.state.orientation = self.orientation_combo.currentText()
         self.state.grid_density = self.grid_density_combo.currentText()
+        selected_mode = self.camera_temperature_range_combo.currentData()
+        self.state.camera_temperature_range_mode = int(selected_mode) if selected_mode is not None else RANGE_MODE_HIGH
         self.state.manual_range_enabled = self.manual_range_checkbox.isChecked()
         self.state.manual_min_temp = float(self.min_spin.value())
         self.state.manual_max_temp = float(self.max_spin.value())
@@ -402,15 +444,110 @@ class MainWindow(QMainWindow):
 
         self.capture_worker = OpenCVCaptureWorker(index, width, height, int(fps))
         self.capture_worker.frame_ready.connect(self.on_frame_ready)
+        self.capture_worker.camera_opened.connect(self._apply_selected_camera_temperature_range)
         self.capture_worker.error.connect(lambda msg: QMessageBox.critical(self, "Capture Error", msg))
         self.capture_worker.start()
         self.start_button.setText("Stop Camera")
         self._persist_state()
 
+    def _on_camera_temperature_range_changed(self, _value: str) -> None:
+        self._schedule_state_persist()
+        if self.capture_worker is None:
+            return
+        self._apply_selected_camera_temperature_range()
+
+    def _run_camera_control_startup_check(self) -> None:
+        ok, message = camera_control_startup_check()
+        if ok:
+            self.statusBar().showMessage(message, 3000)
+            return
+        self.camera_temperature_range_combo.setEnabled(False)
+        QMessageBox.warning(self, "Camera Temperature Range", message)
+        self.statusBar().showMessage(message)
+
+    def _apply_selected_camera_temperature_range(self) -> None:
+        selected_mode = self.camera_temperature_range_combo.currentData()
+        selected_range_mode = int(selected_mode) if selected_mode is not None else RANGE_MODE_HIGH
+        if self._camera_range_apply_in_progress:
+            self._pending_camera_temperature_range = selected_range_mode
+            return
+        self._wait_for_stream_resume_after_range_switch = False
+        self._range_switch_completed_at = None
+        self._processed_frames_since_range_switch = 0
+        self._set_temperature_range_switch_overlay(True)
+        self._camera_range_apply_in_progress = True
+
+        def _apply_range_worker() -> None:
+            ok, message = apply_temperature_range(selected_range_mode)
+            self.camera_range_apply_finished.emit(selected_range_mode, ok, message)
+
+        threading.Thread(target=_apply_range_worker, daemon=True).start()
+
+    def _on_camera_temperature_range_applied(self, applied_range: int, ok: bool, message: str) -> None:
+        self._camera_range_apply_in_progress = False
+        if not ok:
+            QMessageBox.warning(self, "Camera Temperature Range", message)
+            self._wait_for_stream_resume_after_range_switch = False
+            self._range_switch_completed_at = None
+            self._processed_frames_since_range_switch = 0
+            self._set_temperature_range_switch_overlay(False)
+        else:
+            self.statusBar().showMessage(message, 3000)
+        if self._pending_camera_temperature_range is None:
+            if ok:
+                self._wait_for_stream_resume_after_range_switch = True
+                self._range_switch_completed_at = time.perf_counter()
+                self._processed_frames_since_range_switch = 0
+            return
+        pending_range = self._pending_camera_temperature_range
+        self._pending_camera_temperature_range = None
+        if pending_range != applied_range:
+            self._wait_for_stream_resume_after_range_switch = False
+            self._range_switch_completed_at = None
+            self._processed_frames_since_range_switch = 0
+            self._apply_selected_camera_temperature_range()
+            return
+        if ok:
+            self._wait_for_stream_resume_after_range_switch = True
+            self._range_switch_completed_at = time.perf_counter()
+            self._processed_frames_since_range_switch = 0
+
+    def _set_temperature_range_switch_overlay(self, enabled: bool) -> None:
+        self._show_temperature_range_switch_overlay = enabled
+        if enabled:
+            self._show_temperature_range_overlay_on_preview()
+            return
+        if self._last_preview_rgb is not None:
+            self.preview.setPixmap(self._pixmap_from_rgb(self._last_preview_rgb))
+        else:
+            self.preview.setText("No image")
+
+    def _show_temperature_range_overlay_on_preview(self) -> None:
+        if self._last_preview_rgb is None:
+            self.preview.setText("Switching temperature range...")
+            return
+        overlay_rgb = self._last_preview_rgb.copy()
+        text = "Switching temperature range..."
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.9
+        thickness = 2
+        (text_width, text_height), baseline = cv2.getTextSize(text, font, scale, thickness)
+        x = max((overlay_rgb.shape[1] - text_width) // 2, 8)
+        y = max((overlay_rgb.shape[0] + text_height) // 2, text_height + 8)
+        top = max(y - text_height - 12, 0)
+        bottom = min(y + baseline + 12, overlay_rgb.shape[0])
+        left = max(x - 12, 0)
+        right = min(x + text_width + 12, overlay_rgb.shape[1])
+        cv2.rectangle(overlay_rgb, (left, top), (right, bottom), (0, 0, 0), -1)
+        cv2.putText(overlay_rgb, text, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        self.preview.setPixmap(self._pixmap_from_rgb(overlay_rgb))
+
     def on_frame_ready(self, frame: np.ndarray) -> None:
+        self._received_frame_count += 1
         if self.processing_worker is None:
             return
         settings = self._current_processing_settings()
+        settings.frame_sequence_id = self._received_frame_count
         self.processing_worker.submit_frame(frame, settings)
 
     def _current_processing_settings(self) -> ProcessingSettings:
@@ -425,6 +562,7 @@ class MainWindow(QMainWindow):
             show_grid=self.grid_checkbox.isChecked(),
             show_min_max=self.min_max_checkbox.isChecked(),
             grid_density=self.grid_density_combo.currentText(),
+            camera_temperature_range=int(self.camera_temperature_range_combo.currentData() or RANGE_MODE_HIGH),
             unit=self.unit_combo.currentText(),
             preview_width=target_size.width(),
             preview_height=target_size.height(),
@@ -435,6 +573,7 @@ class MainWindow(QMainWindow):
                 min(self.history_label.height(), MAX_HISTORY_WIDGET_HEIGHT_PX),
                 MIN_HISTORY_RENDER_HEIGHT,
             ),
+            frame_sequence_id=self._received_frame_count,
         )
 
     def _on_processed_frame(self, result_obj: object) -> None:
@@ -448,10 +587,27 @@ class MainWindow(QMainWindow):
         try:
             self.last_render_bgr = result.export_bgr
             self.last_temps_celsius = result.thermal_celsius
+            self._last_auto_range_min_c = result.min_value
+            self._last_auto_range_max_c = result.max_value
             self._last_preview_rgb = result.preview_rgb
             self._last_histogram_rgb = result.histogram_rgb
             self._last_history_rgb = result.history_rgb
-            self.preview.setPixmap(self._pixmap_from_rgb(result.preview_rgb))
+            if self._show_temperature_range_switch_overlay and self._wait_for_stream_resume_after_range_switch:
+                self._processed_frames_since_range_switch += 1
+                if (
+                    self._range_switch_completed_at is not None
+                    and (time.perf_counter() - self._range_switch_completed_at)
+                    >= self._range_switch_min_overlay_seconds_after_complete
+                    and self._processed_frames_since_range_switch >= self._required_processed_frames_after_range_switch
+                ):
+                    self._wait_for_stream_resume_after_range_switch = False
+                    self._range_switch_completed_at = None
+                    self._processed_frames_since_range_switch = 0
+                    self._set_temperature_range_switch_overlay(False)
+            if self._show_temperature_range_switch_overlay:
+                self._show_temperature_range_overlay_on_preview()
+            else:
+                self.preview.setPixmap(self._pixmap_from_rgb(result.preview_rgb))
             self.histogram_label.setPixmap(self._pixmap_from_rgb(result.histogram_rgb))
             self.history_label.setPixmap(self._pixmap_from_rgb(result.history_rgb))
             self._update_stats(result.min_value, result.max_value, result.average, result.center)
@@ -479,6 +635,22 @@ class MainWindow(QMainWindow):
         self.avg_value_label.setText(format_temperature_ui(avg_c, unit))
         self.center_value_label.setText(format_temperature_ui(center_c, unit))
 
+    def _set_manual_range_to_current(self) -> None:
+        if self._last_auto_range_min_c is None or self._last_auto_range_max_c is None:
+            self.statusBar().showMessage("No frame yet to set manual range.", 2500)
+            return
+        current_min = int(math.floor(self._last_auto_range_min_c))
+        current_max = int(math.ceil(self._last_auto_range_max_c))
+        if current_max <= current_min:
+            current_max = current_min + 1
+        self.min_spin.setValue(current_min)
+        self.max_spin.setValue(current_max)
+        self.manual_range_checkbox.setChecked(True)
+        self.statusBar().showMessage(
+            f"Manual range set to current frame: {current_min} .. {current_max} C",
+            3000,
+        )
+
     def moveEvent(self, event) -> None:  # type: ignore[override]
         super().moveEvent(event)
         self._schedule_state_persist()
@@ -487,7 +659,10 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._schedule_state_persist()
         if self._last_preview_rgb is not None:
-            self.preview.setPixmap(self._pixmap_from_rgb(self._last_preview_rgb))
+            if self._show_temperature_range_switch_overlay:
+                self._show_temperature_range_overlay_on_preview()
+            else:
+                self.preview.setPixmap(self._pixmap_from_rgb(self._last_preview_rgb))
         if self._last_histogram_rgb is not None:
             self.histogram_label.setPixmap(self._pixmap_from_rgb(self._last_histogram_rgb))
         if self._last_history_rgb is not None:

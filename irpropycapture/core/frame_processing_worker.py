@@ -34,6 +34,7 @@ class ProcessingSettings:
     show_grid: bool
     show_min_max: bool
     grid_density: str
+    camera_temperature_range: int
     unit: str
     preview_width: int
     preview_height: int
@@ -41,6 +42,7 @@ class ProcessingSettings:
     histogram_height: int
     history_width: int
     history_height: int
+    frame_sequence_id: int
 
 
 @dataclass
@@ -55,6 +57,7 @@ class ProcessingResult:
     average: float
     center: float
     timings_ms: dict[str, float]
+    frame_sequence_id: int
 
 
 class ProcessingWorker(QThread):
@@ -117,9 +120,11 @@ class ProcessingWorker(QThread):
     def _process_frame(self, frame: np.ndarray, settings: ProcessingSettings) -> ProcessingResult:
         total_start = time.perf_counter()
         decode_start = time.perf_counter()
-        result = self._processor.get_temperatures(frame)
+        smooth_for_high_range = settings.camera_temperature_range == 1
+        result = self._processor.get_temperatures(frame, smooth_for_high_range=smooth_for_high_range)
         decode_elapsed = time.perf_counter() - decode_start
         thermal = result.temperatures.reshape(192, 256)
+        measurement_thermal = result.measurement_temperatures.reshape(192, 256)
 
         render_start = time.perf_counter()
         rendered = render_thermal_image(
@@ -136,7 +141,7 @@ class ProcessingWorker(QThread):
 
         oriented_thermal = None
         if settings.show_grid or settings.show_min_max:
-            oriented_thermal = apply_orientation(thermal, settings.orientation)
+            oriented_thermal = apply_orientation(measurement_thermal, settings.orientation)
 
         overlay_start = time.perf_counter()
         export_bgr = _resize_export(rendered)
@@ -155,13 +160,25 @@ class ProcessingWorker(QThread):
         overlay_elapsed = time.perf_counter() - overlay_start
 
         histogram_start = time.perf_counter()
+        if settings.manual_range_enabled:
+            histogram_min = settings.manual_min_temp
+            histogram_max = max(settings.manual_max_temp, settings.manual_min_temp + 0.1)
+        else:
+            histogram_min = result.min_value
+            histogram_max = result.max_value
+        histogram_points = TemperatureProcessor.compute_histogram(
+            result.measurement_temperatures,
+            histogram_min,
+            histogram_max,
+            bins=max(2, len(result.histogram)),
+        )
         gradient_color = self._get_histogram_gradient(
             color_map_name=settings.color_map_name,
             height=max(settings.histogram_height, MIN_HISTOGRAM_RENDER_HEIGHT),
             width=40,
         )
         histogram_bgr = _build_histogram_image(
-            result.histogram,
+            histogram_points,
             settings.unit,
             settings.histogram_width,
             settings.histogram_height,
@@ -212,6 +229,7 @@ class ProcessingWorker(QThread):
             average=result.average,
             center=result.center,
             timings_ms=timings_ms,
+            frame_sequence_id=settings.frame_sequence_id,
         )
 
     def _get_histogram_gradient(self, color_map_name: str, height: int, width: int) -> np.ndarray:

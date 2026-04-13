@@ -27,6 +27,7 @@ class TemperatureHistoryPoint:
 @dataclass
 class TemperatureResult:
     temperatures: np.ndarray
+    measurement_temperatures: np.ndarray
     min_value: float
     max_value: float
     average: float
@@ -45,20 +46,28 @@ class TemperatureProcessor:
         self.max_history_seconds = 60.0
         self._history_generation: int = 0
         self._last_history_snapshot: list[TemperatureHistoryPoint] = []
+        self._smoothed_measurement_temperatures: np.ndarray | None = None
+        self._measurement_smoothing_was_enabled = False
 
-    def get_temperatures(self, frame_bgr: np.ndarray, start_row: int = 192) -> TemperatureResult:
+    def get_temperatures(
+        self,
+        frame_bgr: np.ndarray,
+        start_row: int = 192,
+        smooth_for_high_range: bool = False,
+    ) -> TemperatureResult:
+        _ = start_row
         raw = frame_bgr
         if raw.shape[0] < self.height or raw.shape[1] < self.width * 2:
             raise ValueError(f"Unexpected frame shape: {raw.shape}")
 
         temperatures = self._decode_best_candidate(raw)
-
-        min_v = float(np.min(temperatures))
-        max_v = float(np.max(temperatures))
-        avg_v = float(np.mean(temperatures))
+        measurement_temperatures = self._smooth_measurement_temperatures(temperatures, enabled=smooth_for_high_range)
+        min_v = float(np.min(measurement_temperatures))
+        max_v = float(np.max(measurement_temperatures))
+        avg_v = float(np.mean(measurement_temperatures))
         center_i = self.width * (self.height // 2) + (self.width // 2)
-        center_v = float(temperatures[center_i])
-        histogram = self.compute_histogram(temperatures, min_v, max_v, bins=50)
+        center_v = float(measurement_temperatures[center_i])
+        histogram = self.compute_histogram(measurement_temperatures, min_v, max_v, bins=50)
         gen_before = self._history_generation
         if min_v > -20.0:
             self.update_temperature_history(min_v, max_v, avg_v, center_v)
@@ -66,6 +75,7 @@ class TemperatureProcessor:
             self._last_history_snapshot = list(self.temperature_history)
         return TemperatureResult(
             temperatures=temperatures,
+            measurement_temperatures=measurement_temperatures,
             min_value=min_v,
             max_value=max_v,
             average=avg_v,
@@ -74,6 +84,25 @@ class TemperatureProcessor:
             temperature_history=self._last_history_snapshot,
             history_generation=self._history_generation,
         )
+
+    def _smooth_measurement_temperatures(self, temperatures: np.ndarray, enabled: bool) -> np.ndarray:
+        """Smooth only the measurement matrix while keeping render matrix untouched."""
+        if not enabled:
+            self._smoothed_measurement_temperatures = None
+            self._measurement_smoothing_was_enabled = False
+            return temperatures
+
+        alpha = 0.20
+        if self._smoothed_measurement_temperatures is None or not self._measurement_smoothing_was_enabled:
+            self._smoothed_measurement_temperatures = temperatures.copy()
+            self._measurement_smoothing_was_enabled = True
+            return self._smoothed_measurement_temperatures.copy()
+
+        self._smoothed_measurement_temperatures = (
+            (1.0 - alpha) * self._smoothed_measurement_temperatures + alpha * temperatures
+        ).astype(np.float32, copy=False)
+        self._measurement_smoothing_was_enabled = True
+        return self._smoothed_measurement_temperatures.copy()
 
     def _decode_best_candidate(self, raw: np.ndarray) -> np.ndarray:
         rows_192 = raw[192 : 192 + self.height, : self.width * 2]

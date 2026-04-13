@@ -22,6 +22,8 @@ class AppState:
     manual_range_enabled: bool = False
     manual_min_temp: float = 20.0
     manual_max_temp: float = 40.0
+    # 0 = low range, 1 = high range
+    camera_temperature_range_mode: int = 1
     camera_index: int = 0
     camera_name: str = ""
     last_image_save_dir: str = ""
@@ -41,6 +43,10 @@ def load_state() -> AppState:
         payload = json.loads(STATE_PATH.read_text(encoding="utf-8"))
         valid_keys = {field.name for field in fields(AppState)}
         filtered_payload = {key: value for key, value in payload.items() if key in valid_keys}
+        # Backward compatibility: migrate legacy string-based range setting.
+        legacy_range = payload.get("camera_temperature_range")
+        if "camera_temperature_range_mode" not in filtered_payload and isinstance(legacy_range, str):
+            filtered_payload["camera_temperature_range_mode"] = 0 if legacy_range.strip().lower().startswith("low") else 1
         return AppState(**filtered_payload)
     except Exception:
         return AppState()

@@ -13,6 +13,8 @@ Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop 
 - Histogram with active colormap scale
 - 1 minute temperature history chart (Max/Min/Ave/Center)
 - Manual temperature range (optional)
+- Camera temperature range switch (`Low range (-20 to 180°C)` / `High range (-20 to 600°C)`)
+- High-range measurement smoothing for more stable values (Min/Max/Average/Center, grid, min/max markers)
 - Orientation controls (rotate/flip)
 - PNG snapshot export
 - MP4 recording export
@@ -26,7 +28,7 @@ Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop 
 - macOS, Linux, or Windows (OpenCV camera backend)
 - Python 3.11+
 
-Python dependencies are listed in `requirements.txt`.
+For camera temperature range switching, `pyusb` also requires a working `libusb` backend on the system.
 
 ## Setup
 
@@ -35,8 +37,20 @@ From the repository root:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 ```
+
+For development and test tooling, use `pip install -e ".[dev]"`.
+
+### USB backend setup (for temperature range switching)
+
+- macOS:
+  - `brew install libusb`
+- Linux:
+  - install `libusb-1.0` via your package manager (distribution-specific package name)
+  - ensure user/device permissions allow USB control access
+- Windows:
+  - install a compatible USB backend/driver stack (https://github.com/libusb/libusb/wiki/Windows#user-content-How_to_use_libusb_on_Windows)
 
 ## Run
 
@@ -79,8 +93,10 @@ Original repository:
 - Linux:
   - Capture uses OpenCV V4L2 backend and probes camera indices for raw-compatible formats (`Y16`/`YUYV`/`UYVY`).
   - Ensure your user can access `/dev/video*` devices (udev/group permissions).
+  - For temperature range switching, also ensure USB access permissions for the thermal device (libusb path).
 
 - Windows:
   - Capture uses OpenCV MSMF backend first, then DirectShow fallback for broader USB camera compatibility.
   - If no stream opens, verify camera privacy settings and close software that may lock the camera.
+  - Temperature range switching depends on a working `pyusb` backend and a compatible USB driver binding.
 
