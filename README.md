@@ -18,6 +18,8 @@ Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop 
 - Orientation controls (rotate/flip)
 - PNG snapshot export
 - MP4 recording export
+- Shared export directory for PNG and MP4 (persisted)
+- Keyboard shortcuts: `p` (save PNG instantly), `r` (start/stop recording instantly)
 - Persistent UI state (camera selection, colormap, controls, window size)
 
 ## Screenshot ##
@@ -68,6 +70,10 @@ python -m irpropycapture.main
 3. Click **Start Camera**.
 4. Adjust colormap, orientation, grid, manual range, and marker options.
 5. Use **Save PNG** for snapshots and **Start/Stop Recording** for MP4.
+   - These buttons keep the save dialog and update the shared export directory.
+6. Use keyboard shortcuts for quick actions (without save dialog):
+   - `p` saves a PNG immediately in the shared export directory.
+   - `r` starts/stops MP4 recording immediately in the shared export directory.
 
 ## Acknowledgements
 
@@ -81,6 +87,7 @@ Original repository:
 
 - On first run, the OS may request camera permission.
 - UI state is stored in `~/.irpropycapture_state.json`.
+- PNG and MP4 share one persisted export directory.
 - If no image appears, verify camera access permissions and that the camera is not used by another application.
 - Optional performance logs can be enabled with `IRPRO_PY_CAPTURE_PERF=1`.
 

@@ -10,9 +10,10 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QGuiApplication, QImage, QPixmap
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QFontDatabase, QGuiApplication, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -79,6 +80,9 @@ class MainWindow(QMainWindow):
         self._state_save_timer.setSingleShot(True)
         self._state_save_timer.timeout.connect(self._persist_state)
         self.camera_range_apply_finished.connect(self._on_camera_temperature_range_applied)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
         self._camera_range_apply_in_progress = False
         self._pending_camera_temperature_range: int | None = None
         self._show_temperature_range_switch_overlay = False
@@ -261,6 +265,7 @@ class MainWindow(QMainWindow):
         self.manual_set_to_current_button.clicked.connect(self._set_manual_range_to_current)
         self.min_spin.valueChanged.connect(self._schedule_state_persist)
         self.max_spin.valueChanged.connect(self._schedule_state_persist)
+        self._configure_hotkeys()
 
         self.refresh_camera_list()
 
@@ -346,11 +351,27 @@ class MainWindow(QMainWindow):
         self.state.window_y = frame.y()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         self._stop_workers()
         if self.recorder.is_recording:
             self.recorder.stop()
         self._persist_state()
         super().closeEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Type.KeyPress and self.isActiveWindow():
+            key = event.key()
+            modifiers = event.modifiers()
+            if modifiers in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.KeypadModifier):
+                if key == Qt.Key.Key_P:
+                    self.save_snapshot_quick()
+                    return True
+                if key == Qt.Key.Key_R:
+                    self.toggle_recording_quick()
+                    return True
+        return super().eventFilter(watched, event)
 
     def _restore_state_to_controls(self) -> None:
         self.color_map_combo.setCurrentText(self.state.color_map)
@@ -390,6 +411,19 @@ class MainWindow(QMainWindow):
 
     def _schedule_state_persist(self) -> None:
         self._state_save_timer.start(250)
+
+    def _configure_hotkeys(self) -> None:
+        self.save_png_action = QAction("Quick Save PNG", self)
+        self.save_png_action.setShortcut(QKeySequence("P"))
+        self.save_png_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.save_png_action.triggered.connect(self.save_snapshot_quick)
+        self.addAction(self.save_png_action)
+
+        self.record_action = QAction("Quick Toggle Recording", self)
+        self.record_action.setShortcut(QKeySequence("R"))
+        self.record_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.record_action.triggered.connect(self.toggle_recording_quick)
+        self.addAction(self.record_action)
 
     def refresh_camera_list(self) -> None:
         self.camera_combo.clear()
@@ -675,48 +709,98 @@ class MainWindow(QMainWindow):
         return QPixmap.fromImage(qimg)
 
     def save_snapshot(self) -> None:
+        self._save_snapshot(use_dialog=True)
+
+    def save_snapshot_quick(self) -> None:
+        self._save_snapshot(use_dialog=False)
+
+    def _save_snapshot(self, use_dialog: bool) -> None:
         if self.last_render_bgr is None:
             QMessageBox.information(self, "Save PNG", "No frame available.")
             return
         default_name = datetime.now().strftime("thermal_%Y%m%d_%H%M%S.png")
-        initial_target = self._initial_save_target(self.state.last_image_save_dir, default_name)
-        path, _ = QFileDialog.getSaveFileName(self, "Save PNG", str(initial_target), "PNG Image (*.png)")
-        if not path:
+        if use_dialog:
+            initial_target = self._initial_save_target(default_name)
+            path, _ = QFileDialog.getSaveFileName(self, "Save PNG", str(initial_target), "PNG Image (*.png)")
+            if not path:
+                return
+            selected_path = Path(path)
+        else:
+            selected_path = self._build_auto_export_path(default_name)
+        if not self._set_shared_export_directory(selected_path.parent):
+            QMessageBox.critical(self, "Save PNG", "Failed to prepare export directory.")
             return
-        selected_path = Path(path)
-        self.state.last_image_save_dir = str(selected_path.parent)
-        save_state(self.state)
         # Preserve the exact rendered orientation and aspect ratio for snapshots.
         ok = save_png(selected_path, self.last_render_bgr)
         if not ok:
             QMessageBox.critical(self, "Save PNG", "Failed to save image.")
+            return
+        if not use_dialog:
+            self.statusBar().showMessage(f"Saved PNG: {selected_path.name}", 2500)
 
     def toggle_recording(self) -> None:
+        self._toggle_recording(use_dialog=True)
+
+    def toggle_recording_quick(self) -> None:
+        self._toggle_recording(use_dialog=False)
+
+    def _toggle_recording(self, use_dialog: bool) -> None:
         if self.recorder.is_recording:
             self.recorder.stop()
             self.record_button.setText("Start Recording")
+            self.statusBar().showMessage("Recording stopped.", 2000)
             return
         if self.last_render_bgr is None:
             QMessageBox.information(self, "Record MP4", "Start the stream first.")
             return
         default_name = datetime.now().strftime("thermal_%Y%m%d_%H%M%S.mp4")
-        initial_target = self._initial_save_target(self.state.last_recording_save_dir, default_name)
-        path, _ = QFileDialog.getSaveFileName(self, "Save MP4", str(initial_target), "MP4 Video (*.mp4)")
-        if not path:
+        if use_dialog:
+            initial_target = self._initial_save_target(default_name)
+            path, _ = QFileDialog.getSaveFileName(self, "Save MP4", str(initial_target), "MP4 Video (*.mp4)")
+            if not path:
+                return
+            selected_path = Path(path)
+        else:
+            selected_path = self._build_auto_export_path(default_name)
+        if not self._set_shared_export_directory(selected_path.parent):
+            QMessageBox.critical(self, "Record MP4", "Failed to prepare export directory.")
             return
-        selected_path = Path(path)
-        self.state.last_recording_save_dir = str(selected_path.parent)
-        save_state(self.state)
         h, w, _ = self.last_render_bgr.shape
         if not self.recorder.start(selected_path, (w, h), fps=25.0):
             QMessageBox.critical(self, "Record MP4", "Failed to start recorder.")
             return
         self.record_button.setText("Stop Recording")
+        if not use_dialog:
+            self.statusBar().showMessage(f"Recording started: {selected_path.name}", 2500)
 
-    @staticmethod
-    def _initial_save_target(last_directory: str, default_name: str) -> Path:
-        if last_directory:
-            directory = Path(last_directory)
+    def _initial_save_target(self, default_name: str) -> Path:
+        return self._default_export_directory() / default_name
+
+    def _default_export_directory(self) -> Path:
+        if self.state.export_save_dir:
+            directory = Path(self.state.export_save_dir)
             if directory.exists() and directory.is_dir():
-                return directory / default_name
-        return Path.home() / default_name
+                return directory
+        return Path.home()
+
+    def _set_shared_export_directory(self, directory: Path) -> bool:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        self.state.export_save_dir = str(directory)
+        save_state(self.state)
+        return True
+
+    def _build_auto_export_path(self, default_name: str) -> Path:
+        base_directory = self._default_export_directory()
+        candidate = base_directory / default_name
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        for index in range(1, 1000):
+            next_candidate = base_directory / f"{stem}_{index:03d}{suffix}"
+            if not next_candidate.exists():
+                return next_candidate
+        return base_directory / f"{stem}_{int(time.time())}{suffix}"

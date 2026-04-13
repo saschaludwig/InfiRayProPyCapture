@@ -26,8 +26,7 @@ class AppState:
     camera_temperature_range_mode: int = 1
     camera_index: int = 0
     camera_name: str = ""
-    last_image_save_dir: str = ""
-    last_recording_save_dir: str = ""
+    export_save_dir: str = ""
     # Last main window frame geometry (client area + frame). Zero size = use defaults on startup.
     window_width: int = 0
     window_height: int = 0
@@ -47,6 +46,14 @@ def load_state() -> AppState:
         legacy_range = payload.get("camera_temperature_range")
         if "camera_temperature_range_mode" not in filtered_payload and isinstance(legacy_range, str):
             filtered_payload["camera_temperature_range_mode"] = 0 if legacy_range.strip().lower().startswith("low") else 1
+        # Backward compatibility: migrate separate image/video save directories.
+        if not filtered_payload.get("export_save_dir"):
+            legacy_recording_dir = payload.get("last_recording_save_dir")
+            legacy_image_dir = payload.get("last_image_save_dir")
+            if isinstance(legacy_recording_dir, str) and legacy_recording_dir:
+                filtered_payload["export_save_dir"] = legacy_recording_dir
+            elif isinstance(legacy_image_dir, str) and legacy_image_dir:
+                filtered_payload["export_save_dir"] = legacy_image_dir
         return AppState(**filtered_payload)
     except Exception:
         return AppState()
