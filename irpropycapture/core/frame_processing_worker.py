@@ -272,6 +272,125 @@ def _resize_export(image_bgr: np.ndarray) -> np.ndarray:
     return cv2.resize(image_bgr, target, interpolation=cv2.INTER_NEAREST)
 
 
+def append_export_color_scale(
+    image_bgr: np.ndarray,
+    color_map_name: str,
+    min_temp_c: float,
+    max_temp_c: float,
+    unit: str,
+) -> np.ndarray:
+    """Append a labeled color scale on the long edge of the export image."""
+    image_height, image_width = image_bgr.shape[:2]
+    if image_height <= 0 or image_width <= 0:
+        return image_bgr
+
+    def _format_temp_label(temp_celsius: float) -> str:
+        if unit == "F":
+            temp_value = temp_celsius * 9.0 / 5.0 + 32.0
+            return f"{temp_value:.1f} F"
+        return f"{temp_celsius:.1f} C"
+
+    border_px = 2
+    separator_color = (0, 0, 0)
+    label_color = (220, 220, 220)
+    label_outline = (0, 0, 0)
+
+    if image_height > image_width:
+        scale_width = max(42, min(68, image_width // 12))
+        gradient = np.linspace(255, 0, image_height, dtype=np.uint8).reshape(image_height, 1)
+        gradient = np.repeat(gradient, scale_width, axis=1)
+        color_scale = render_thermal_image(
+            gradient.astype(np.float32),
+            color_map_name=color_map_name,
+            manual_range_enabled=False,
+            manual_min_temp=0.0,
+            manual_max_temp=1.0,
+            auto_min_temp=0.0,
+            auto_max_temp=255.0,
+        )
+        panel_width = border_px + scale_width
+        panel = np.zeros((image_height, panel_width, 3), dtype=np.uint8)
+        panel[:, :border_px, :] = separator_color
+        bar_x0 = border_px
+        bar_x1 = border_px + scale_width
+        panel[:, bar_x0:bar_x1, :] = color_scale
+
+        top_label = _format_temp_label(max_temp_c)
+        bottom_label = _format_temp_label(min_temp_c)
+        text_x = bar_x0 + 4
+        cv2.putText(panel, top_label, (text_x, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, label_outline, 2, cv2.LINE_AA)
+        cv2.putText(panel, top_label, (text_x, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, label_color, 1, cv2.LINE_AA)
+        bottom_y = max(20, image_height - 8)
+        cv2.putText(
+            panel,
+            bottom_label,
+            (text_x, bottom_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            label_outline,
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            panel,
+            bottom_label,
+            (text_x, bottom_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            label_color,
+            1,
+            cv2.LINE_AA,
+        )
+        return np.concatenate((image_bgr, panel), axis=1)
+
+    scale_height = max(34, min(58, image_height // 10))
+    gradient = np.linspace(0, 255, image_width, dtype=np.uint8).reshape(1, image_width)
+    gradient = np.repeat(gradient, scale_height, axis=0)
+    color_scale = render_thermal_image(
+        gradient.astype(np.float32),
+        color_map_name=color_map_name,
+        manual_range_enabled=False,
+        manual_min_temp=0.0,
+        manual_max_temp=1.0,
+        auto_min_temp=0.0,
+        auto_max_temp=255.0,
+    )
+    panel_height = border_px + scale_height
+    panel = np.zeros((panel_height, image_width, 3), dtype=np.uint8)
+    panel[:border_px, :, :] = separator_color
+    bar_y0 = border_px
+    bar_y1 = border_px + scale_height
+    panel[bar_y0:bar_y1, :, :] = color_scale
+    min_label = _format_temp_label(min_temp_c)
+    max_label = _format_temp_label(max_temp_c)
+    text_y = max(bar_y0 + 16, bar_y1 - 8)
+    cv2.putText(panel, min_label, (6, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, label_outline, 2, cv2.LINE_AA)
+    cv2.putText(panel, min_label, (6, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, label_color, 1, cv2.LINE_AA)
+    (max_text_width, _), _ = cv2.getTextSize(max_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    max_text_x = max(6, image_width - max_text_width - 6)
+    cv2.putText(
+        panel,
+        max_label,
+        (max_text_x, text_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        label_outline,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        panel,
+        max_label,
+        (max_text_x, text_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        label_color,
+        1,
+        cv2.LINE_AA,
+    )
+    return np.concatenate((image_bgr, panel), axis=0)
+
+
 def _draw_grid(image_bgr: np.ndarray, thermal_celsius: np.ndarray, density: str, unit: str) -> None:
     if density == "Low":
         step_x, step_y = 64, 48

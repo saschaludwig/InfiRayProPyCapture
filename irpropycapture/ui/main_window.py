@@ -11,11 +11,13 @@ import time
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QFontDatabase, QGuiApplication, QImage, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QFont, QFontDatabase, QGuiApplication, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +48,7 @@ from irpropycapture.core.frame_processing_worker import (
     ProcessingResult,
     ProcessingSettings,
     ProcessingWorker,
+    append_export_color_scale,
 )
 from irpropycapture.core.image_processor import AVAILABLE_COLOR_MAPS, format_temperature_ui
 from irpropycapture.core.perf import PerfReporter
@@ -120,8 +124,18 @@ class MainWindow(QMainWindow):
         self.camera_combo = QComboBox()
         self.refresh_button = QPushButton("Refresh Cameras")
         self.start_button = QPushButton("Start Camera")
-        self.snapshot_button = QPushButton("Save PNG")
-        self.record_button = QPushButton("Start Recording")
+        self.snapshot_button = QPushButton("Save PNG (P)")
+        self.record_button = QPushButton("Start Recording (R)")
+        self.options_button = QToolButton()
+        self.options_button.setText("⚙")
+        self.options_button.setToolTip("Open additional settings")
+        self.options_button.setAutoRaise(True)
+        self.options_button.setStyleSheet("QToolButton { border: none; padding: 0px; margin: 0px; }")
+        options_font = QFont(self.options_button.font())
+        options_font.setBold(True)
+        options_font.setPointSize(max(options_font.pointSize(), 24))
+        self.options_button.setFont(options_font)
+        self.options_button.setFixedHeight(self.record_button.sizeHint().height())
 
         self.color_map_combo = QComboBox()
         self.color_map_combo.addItems(AVAILABLE_COLOR_MAPS)
@@ -144,7 +158,7 @@ class MainWindow(QMainWindow):
         self.min_spin = QSpinBox()
         self.max_spin = QSpinBox()
         for spin in (self.min_spin, self.max_spin):
-            spin.setRange(-50, 300)
+            spin.setRange(-50, 600)
             spin.setSingleStep(1)
 
         self._restore_state_to_controls()
@@ -155,6 +169,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.start_button)
         top.addWidget(self.snapshot_button)
         top.addWidget(self.record_button)
+        top.addWidget(self.options_button)
 
         controls_box = QGroupBox("Controls")
         controls_form = QFormLayout()
@@ -162,13 +177,10 @@ class MainWindow(QMainWindow):
         controls_form.setHorizontalSpacing(6)
         controls_form.setContentsMargins(8, 4, 8, 4)
         controls_form.addRow("Color map", self.color_map_combo)
-        controls_form.addRow("Temperature unit", self.unit_combo)
-        controls_form.addRow("Preview interpolation", self.preview_interpolation_combo)
         controls_form.addRow("Orientation", self.orientation_combo)
         controls_form.addRow(self.grid_checkbox)
         controls_form.addRow(self.min_max_checkbox)
-        controls_form.addRow("Grid density", self.grid_density_combo)
-        controls_form.addRow("Camera temperature range", self.camera_temperature_range_combo)
+        controls_form.addRow("Camera range", self.camera_temperature_range_combo)
         manual_range_row = QWidget()
         manual_range_layout = QHBoxLayout(manual_range_row)
         manual_range_layout.setContentsMargins(0, 0, 0, 0)
@@ -253,6 +265,7 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.toggle_capture)
         self.snapshot_button.clicked.connect(self.save_snapshot)
         self.record_button.clicked.connect(self.toggle_recording)
+        self.options_button.clicked.connect(self._open_options_dialog)
         self.color_map_combo.currentTextChanged.connect(self._schedule_state_persist)
         self.unit_combo.currentTextChanged.connect(self._schedule_state_persist)
         self.preview_interpolation_combo.currentTextChanged.connect(self._schedule_state_persist)
@@ -424,6 +437,74 @@ class MainWindow(QMainWindow):
         self.record_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.record_action.triggered.connect(self.toggle_recording_quick)
         self.addAction(self.record_action)
+
+    def _open_options_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Additional Settings")
+        layout = QVBoxLayout(dialog)
+
+        form = QFormLayout()
+        unit_combo = QComboBox(dialog)
+        unit_combo.addItems(["C", "F"])
+        unit_combo.setCurrentText(self.unit_combo.currentText())
+
+        interpolation_combo = QComboBox(dialog)
+        interpolation_combo.addItems(["Fast", "Smooth"])
+        interpolation_combo.setCurrentText(self.preview_interpolation_combo.currentText())
+
+        grid_density_combo = QComboBox(dialog)
+        grid_density_combo.addItems(["Low", "Medium", "High"])
+        grid_density_combo.setCurrentText(self.grid_density_combo.currentText())
+        export_color_scale_checkbox = QCheckBox("Color scale in saved image/video", dialog)
+        export_color_scale_checkbox.setChecked(self.state.export_include_color_scale)
+
+        form.addRow("Temperature Unit", unit_combo)
+        form.addRow("Preview interpolation", interpolation_combo)
+        form.addRow("Grid density", grid_density_combo)
+        form.addRow(export_color_scale_checkbox)
+        layout.addLayout(form)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.unit_combo.setCurrentText(unit_combo.currentText())
+        self.preview_interpolation_combo.setCurrentText(interpolation_combo.currentText())
+        self.grid_density_combo.setCurrentText(grid_density_combo.currentText())
+        self.state.export_include_color_scale = export_color_scale_checkbox.isChecked()
+        self._schedule_state_persist()
+
+    def _resolve_export_scale_temperatures(self, frame_min_c: float | None = None, frame_max_c: float | None = None) -> tuple[float, float]:
+        if self.manual_range_checkbox.isChecked():
+            low = float(self.min_spin.value())
+            high = float(self.max_spin.value())
+            return min(low, high), max(low, high)
+        resolved_min = self._last_auto_range_min_c if frame_min_c is None else frame_min_c
+        resolved_max = self._last_auto_range_max_c if frame_max_c is None else frame_max_c
+        if resolved_min is None or resolved_max is None:
+            return 0.0, 100.0
+        return min(float(resolved_min), float(resolved_max)), max(float(resolved_min), float(resolved_max))
+
+    def _export_frame_with_optional_color_scale(
+        self,
+        export_frame_bgr: np.ndarray,
+        frame_min_c: float | None = None,
+        frame_max_c: float | None = None,
+    ) -> np.ndarray:
+        if not self.state.export_include_color_scale:
+            return export_frame_bgr
+        min_temp_c, max_temp_c = self._resolve_export_scale_temperatures(frame_min_c=frame_min_c, frame_max_c=frame_max_c)
+        return append_export_color_scale(
+            export_frame_bgr,
+            self.color_map_combo.currentText(),
+            min_temp_c,
+            max_temp_c,
+            self.unit_combo.currentText(),
+        )
 
     def refresh_camera_list(self) -> None:
         self.camera_combo.clear()
@@ -647,7 +728,12 @@ class MainWindow(QMainWindow):
             self._update_stats(result.min_value, result.max_value, result.average, result.center)
             if self.recorder.is_recording:
                 write_start = time.perf_counter()
-                self.recorder.write_frame(result.export_bgr)
+                export_frame_bgr = self._export_frame_with_optional_color_scale(
+                    result.export_bgr,
+                    frame_min_c=result.min_value,
+                    frame_max_c=result.max_value,
+                )
+                self.recorder.write_frame(export_frame_bgr)
                 self._perf.observe("record_enqueue", time.perf_counter() - write_start)
             self._perf.observe("pipeline_total", result.timings_ms.get("total", 0.0) / 1000.0)
         finally:
@@ -731,7 +817,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save PNG", "Failed to prepare export directory.")
             return
         # Preserve the exact rendered orientation and aspect ratio for snapshots.
-        ok = save_png(selected_path, self.last_render_bgr)
+        export_frame_bgr = self._export_frame_with_optional_color_scale(self.last_render_bgr)
+        ok = save_png(selected_path, export_frame_bgr)
         if not ok:
             QMessageBox.critical(self, "Save PNG", "Failed to save image.")
             return
@@ -747,7 +834,7 @@ class MainWindow(QMainWindow):
     def _toggle_recording(self, use_dialog: bool) -> None:
         if self.recorder.is_recording:
             self.recorder.stop()
-            self.record_button.setText("Start Recording")
+            self.record_button.setText("Start Recording (R)")
             self.statusBar().showMessage("Recording stopped.", 2000)
             return
         if self.last_render_bgr is None:
@@ -765,11 +852,12 @@ class MainWindow(QMainWindow):
         if not self._set_shared_export_directory(selected_path.parent):
             QMessageBox.critical(self, "Record MP4", "Failed to prepare export directory.")
             return
-        h, w, _ = self.last_render_bgr.shape
+        initial_export_frame = self._export_frame_with_optional_color_scale(self.last_render_bgr)
+        h, w, _ = initial_export_frame.shape
         if not self.recorder.start(selected_path, (w, h), fps=25.0):
             QMessageBox.critical(self, "Record MP4", "Failed to start recorder.")
             return
-        self.record_button.setText("Stop Recording")
+        self.record_button.setText("Stop Recording (R)")
         if not use_dialog:
             self.statusBar().showMessage(f"Recording started: {selected_path.name}", 2500)
 
