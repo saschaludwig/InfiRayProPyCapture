@@ -13,7 +13,7 @@ Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop 
 - Histogram with active colormap scale
 - 1 minute temperature history chart (Max/Min/Ave/Center)
 - Manual temperature range (optional)
-- Camera temperature range switch (`Low range (-20 to 180°C)` / `High range (-20 to 600°C)`)
+- Camera temperature range switch (`Low (-20~150°C)` / `High (100~600°C)`)
 - High-range measurement smoothing for more stable values (Min/Max/Average/Center, grid, min/max markers)
 - Orientation controls (rotate/flip)
 - PNG snapshot export
