@@ -78,10 +78,11 @@ python -m irpropycapture.main
 ## Acknowledgements
 
 This Python port is based on the awesome original Swift/macOS project by **atomic14**.
+https://github.com/atomic14/InfiRayCapture
 Many thanks to the original author for the groundwork and implementation details.
+Range selection was made possible thanks to hints from the project by **LeoDJ**
+https://github.com/LeoDJ/P2Pro-Viewer
 
-Original repository:
-- [https://github.com/atomic14/InfiRayCapture](https://github.com/atomic14/InfiRayCapture)
 
 ## Notes
 
