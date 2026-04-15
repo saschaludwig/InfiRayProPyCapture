@@ -27,6 +27,7 @@ class AppState:
     camera_index: int = 0
     camera_name: str = ""
     export_save_dir: str = ""
+    export_include_color_scale: bool = True
     # Last main window frame geometry (client area + frame). Zero size = use defaults on startup.
     window_width: int = 0
     window_height: int = 0

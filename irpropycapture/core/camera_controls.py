@@ -12,8 +12,8 @@ import usb.core
 class TemperatureRange(str, enum.Enum):
     """Supported camera gain ranges exposed in the GUI."""
 
-    LOW = "Low range (-20 to 180°C)"
-    HIGH = "High range (-20 to 600°C)"
+    LOW = "Low (-20~150°C)"
+    HIGH = "High (100~600°C)"
 
 RANGE_MODE_LOW = 0
 RANGE_MODE_HIGH = 1
