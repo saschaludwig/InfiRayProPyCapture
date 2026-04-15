@@ -11,11 +11,13 @@ import time
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QFontDatabase, QGuiApplication, QImage, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QFont, QFontDatabase, QGuiApplication, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -122,6 +125,16 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("Start Camera")
         self.snapshot_button = QPushButton("Save PNG")
         self.record_button = QPushButton("Start Recording")
+        self.options_button = QToolButton()
+        self.options_button.setText("⚙")
+        self.options_button.setToolTip("Open additional settings")
+        self.options_button.setAutoRaise(True)
+        self.options_button.setStyleSheet("QToolButton { border: none; padding: 0px; margin: 0px; }")
+        options_font = QFont(self.options_button.font())
+        options_font.setBold(True)
+        options_font.setPointSize(max(options_font.pointSize(), 24))
+        self.options_button.setFont(options_font)
+        self.options_button.setFixedHeight(self.record_button.sizeHint().height())
 
         self.color_map_combo = QComboBox()
         self.color_map_combo.addItems(AVAILABLE_COLOR_MAPS)
@@ -155,6 +168,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.start_button)
         top.addWidget(self.snapshot_button)
         top.addWidget(self.record_button)
+        top.addWidget(self.options_button)
 
         controls_box = QGroupBox("Controls")
         controls_form = QFormLayout()
@@ -162,12 +176,9 @@ class MainWindow(QMainWindow):
         controls_form.setHorizontalSpacing(6)
         controls_form.setContentsMargins(8, 4, 8, 4)
         controls_form.addRow("Color map", self.color_map_combo)
-        controls_form.addRow("Temperature unit", self.unit_combo)
-        controls_form.addRow("Preview interpolation", self.preview_interpolation_combo)
         controls_form.addRow("Orientation", self.orientation_combo)
         controls_form.addRow(self.grid_checkbox)
         controls_form.addRow(self.min_max_checkbox)
-        controls_form.addRow("Grid density", self.grid_density_combo)
         controls_form.addRow("Camera temperature range", self.camera_temperature_range_combo)
         manual_range_row = QWidget()
         manual_range_layout = QHBoxLayout(manual_range_row)
@@ -253,6 +264,7 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.toggle_capture)
         self.snapshot_button.clicked.connect(self.save_snapshot)
         self.record_button.clicked.connect(self.toggle_recording)
+        self.options_button.clicked.connect(self._open_options_dialog)
         self.color_map_combo.currentTextChanged.connect(self._schedule_state_persist)
         self.unit_combo.currentTextChanged.connect(self._schedule_state_persist)
         self.preview_interpolation_combo.currentTextChanged.connect(self._schedule_state_persist)
@@ -424,6 +436,42 @@ class MainWindow(QMainWindow):
         self.record_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.record_action.triggered.connect(self.toggle_recording_quick)
         self.addAction(self.record_action)
+
+    def _open_options_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Additional Settings")
+        layout = QVBoxLayout(dialog)
+
+        form = QFormLayout()
+        unit_combo = QComboBox(dialog)
+        unit_combo.addItems(["C", "F"])
+        unit_combo.setCurrentText(self.unit_combo.currentText())
+
+        interpolation_combo = QComboBox(dialog)
+        interpolation_combo.addItems(["Fast", "Smooth"])
+        interpolation_combo.setCurrentText(self.preview_interpolation_combo.currentText())
+
+        grid_density_combo = QComboBox(dialog)
+        grid_density_combo.addItems(["Low", "Medium", "High"])
+        grid_density_combo.setCurrentText(self.grid_density_combo.currentText())
+
+        form.addRow("Temperature Unit", unit_combo)
+        form.addRow("Preview interpolation", interpolation_combo)
+        form.addRow("Grid density", grid_density_combo)
+        layout.addLayout(form)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.unit_combo.setCurrentText(unit_combo.currentText())
+        self.preview_interpolation_combo.setCurrentText(interpolation_combo.currentText())
+        self.grid_density_combo.setCurrentText(grid_density_combo.currentText())
+        self._schedule_state_persist()
 
     def refresh_camera_list(self) -> None:
         self.camera_combo.clear()
