@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from importlib import resources
 import math
 from pathlib import Path
 import threading
@@ -10,8 +11,9 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QFont, QFontDatabase, QGuiApplication, QImage, QKeySequence, QPixmap
+
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QFontDatabase, QGuiApplication, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -59,6 +61,14 @@ from irpropycapture.core.video_recorder import VideoRecorder
 # Layout caps: histogram chrome + plot; temperature history strip under the main row.
 MAX_CHARTS_BOX_HEIGHT_PX = 250
 MAX_HISTORY_WIDGET_HEIGHT_PX = 200
+
+
+def _load_settings_icon() -> QIcon:
+    """Bundled gear icon with optional freedesktop theme override on Linux."""
+    ref = resources.files("irpropycapture.resources.icons") / "settings.svg"
+    with resources.as_file(ref) as path:
+        bundled = QIcon(str(path))
+    return QIcon.fromTheme("preferences-system", bundled)
 
 
 class MainWindow(QMainWindow):
@@ -127,15 +137,15 @@ class MainWindow(QMainWindow):
         self.snapshot_button = QPushButton("Save PNG (P)")
         self.record_button = QPushButton("Start Recording (R)")
         self.options_button = QToolButton()
-        self.options_button.setText("⚙")
         self.options_button.setToolTip("Open additional settings")
         self.options_button.setAutoRaise(True)
         self.options_button.setStyleSheet("QToolButton { border: none; padding: 0px; margin: 0px; }")
-        options_font = QFont(self.options_button.font())
-        options_font.setBold(True)
-        options_font.setPointSize(max(options_font.pointSize(), 24))
-        self.options_button.setFont(options_font)
-        self.options_button.setFixedHeight(self.record_button.sizeHint().height())
+        self.options_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.options_button.setIcon(_load_settings_icon())
+        row_h = self.record_button.sizeHint().height()
+        icon_px = max(16, min(22, row_h - 6))
+        self.options_button.setIconSize(QSize(icon_px, icon_px))
+        self.options_button.setFixedSize(row_h, row_h)
 
         self.color_map_combo = QComboBox()
         self.color_map_combo.addItems(AVAILABLE_COLOR_MAPS)

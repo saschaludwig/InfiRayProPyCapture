@@ -34,6 +34,9 @@ include-package-data = true
 where = ["."]
 include = ["irpropycapture*"]
 
+[tool.setuptools.package-data]
+irpropycapture = ["resources/icons/*.svg"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
