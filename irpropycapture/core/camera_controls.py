@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import enum
+import platform
 import struct
 import time
 
+import usb.backend.libusb0
 import usb.backend.libusb1
 import usb.core
+
 
 class TemperatureRange(str, enum.Enum):
     """Supported camera gain ranges exposed in the GUI."""
 
     LOW = "Low (-20~150°C)"
     HIGH = "High (100~600°C)"
+
 
 RANGE_MODE_LOW = 0
 RANGE_MODE_HIGH = 1
@@ -25,17 +29,69 @@ _CMD_PROP_TPD_PARAMS = 0x8514
 _CMD_SET = 0x4000
 _TPD_PROP_GAIN_SEL = 5
 
+_WINDOWS_FILTER_HINT = (
+    "Windows USB control needs the libusb-win32 upper filter on "
+    "'USB Camera (Interface 0)' (Zadig: Install Filter Driver, do not replace UVC) "
+    "and the live camera stream must already be running."
+)
+
+
+def _get_backend():
+    """Return the best available USB backend for camera vendor controls."""
+    system = platform.system()
+    # On Windows the Zadig libusb-win32 filter is accessed through the libusb0 API.
+    # libusb-1.0 can enumerate the device but fails to open it (Entity not found).
+    if system == "Windows":
+        backend = usb.backend.libusb0.get_backend()
+        if backend is not None:
+            return backend
+        return usb.backend.libusb1.get_backend()
+    backend = usb.backend.libusb1.get_backend()
+    if backend is not None:
+        return backend
+    return usb.backend.libusb0.get_backend()
+
+
+def _find_camera_device():
+    return usb.core.find(
+        idVendor=_CAMERA_VENDOR_ID,
+        idProduct=_CAMERA_PRODUCT_ID,
+        backend=_get_backend(),
+    )
+
+
+def _windows_control_access_message(exc: Exception) -> str:
+    message = str(exc)
+    if platform.system() != "Windows":
+        return message
+    lowered = message.lower()
+    if (
+        "entity not found" in lowered
+        or "access denied" in lowered
+        or "nicht bereit" in lowered
+        or "not ready" in lowered
+        or "libusb_error_not_found" in lowered
+        or "libusb_error_access" in lowered
+    ):
+        return f"{message}. {_WINDOWS_FILTER_HINT}"
+    return message
+
+
+def _probe_control_access(camera_device: usb.core.Device) -> None:
+    """Open the device and issue a lightweight vendor status read."""
+    camera_device.ctrl_transfer(0xC1, 0x44, 0x78, 0x200, 1)
+
 
 def camera_control_startup_check() -> tuple[bool, str]:
     """Validate whether USB backend and camera control interface are available."""
-    backend = usb.backend.libusb1.get_backend()
+    backend = _get_backend()
     if backend is None:
         return (
             False,
             "USB backend not available. Install libusb (https://github.com/pyusb/pyusb).",
         )
     try:
-        camera_device = usb.core.find(idVendor=_CAMERA_VENDOR_ID, idProduct=_CAMERA_PRODUCT_ID)
+        camera_device = _find_camera_device()
     except usb.core.NoBackendError:
         return (
             False,
@@ -43,6 +99,19 @@ def camera_control_startup_check() -> tuple[bool, str]:
         )
     if camera_device is None:
         return False, "Thermal camera control interface not found."
+    if platform.system() == "Windows":
+        # With a libusb filter installed, vendor control before the UVC stream is open
+        # can fail with 'device not ready'. Only verify device presence here.
+        return (
+            True,
+            "Camera USB device found. Start the stream before switching temperature range.",
+        )
+    try:
+        _probe_control_access(camera_device)
+    except usb.core.USBError as exc:
+        return False, _windows_control_access_message(exc)
+    except Exception as exc:
+        return False, f"Failed to access camera USB control interface: {exc}"
     return True, "Camera USB control interface is available."
 
 
@@ -90,7 +159,7 @@ def apply_temperature_range(selected_range_mode: int, timeout_seconds: float = 5
     gain_value = 1 if range_mode is TemperatureRange.LOW else 0
 
     try:
-        camera_device = usb.core.find(idVendor=_CAMERA_VENDOR_ID, idProduct=_CAMERA_PRODUCT_ID)
+        camera_device = _find_camera_device()
         if camera_device is None:
             return False, "Thermal camera control interface not found."
         _write_gain_select(camera_device, gain_value, timeout_seconds=timeout_seconds)
@@ -100,7 +169,7 @@ def apply_temperature_range(selected_range_mode: int, timeout_seconds: float = 5
             "pyusb has no backend available. Install a libusb backend on your system (e.g. libusb).",
         )
     except usb.core.USBError as exc:
-        return False, f"USB error while applying camera temperature range: {exc}"
+        return False, f"USB error while applying camera temperature range: {_windows_control_access_message(exc)}"
     except Exception as exc:
         return False, f"Failed to apply camera temperature range: {exc}"
 

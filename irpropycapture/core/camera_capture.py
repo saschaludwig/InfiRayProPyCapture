@@ -26,24 +26,46 @@ def _try_set_capture_fourcc(cap: cv2.VideoCapture, fourcc_tag: str) -> bool:
         return False
 
 
-def _open_capture(camera_index: int, width: int, height: int, fps: int) -> tuple[cv2.VideoCapture | None, str]:
+def _open_capture(
+    camera_index: int,
+    width: int,
+    height: int,
+    fps: int,
+    *,
+    prefer_dshow: bool = False,
+    open_timeout_ms: int | None = None,
+) -> tuple[cv2.VideoCapture | None, str]:
     """Open capture with platform-specific backend strategy."""
     system = platform.system()
     if system == "Darwin":
         return _open_capture_macos(camera_index, width, height, fps)
     if system == "Windows":
-        return _open_capture_windows(camera_index)
+        return _open_capture_windows(
+            camera_index,
+            prefer_dshow=prefer_dshow,
+            open_timeout_ms=open_timeout_ms,
+        )
     if system == "Linux":
         return _open_capture_linux(camera_index)
     return _open_capture_native(camera_index, cv2.CAP_ANY, "native-any")
 
 
-def _open_capture_native(camera_index: int, backend: int, mode: str) -> tuple[cv2.VideoCapture | None, str]:
-    cap = cv2.VideoCapture(camera_index, backend)
-    if cap.isOpened():
-        return cap, mode
-    cap.release()
-    return None, ""
+def _open_capture_native(
+    camera_index: int,
+    backend: int,
+    mode: str,
+    open_timeout_ms: int | None = None,
+) -> tuple[cv2.VideoCapture | None, str]:
+    cap = cv2.VideoCapture()
+    if open_timeout_ms is not None and hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+        try:
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, float(open_timeout_ms))
+        except cv2.error:
+            pass
+    if not cap.open(camera_index, backend) or not cap.isOpened():
+        cap.release()
+        return None, ""
+    return cap, mode
 
 
 def _open_capture_macos(camera_index: int, width: int, height: int, fps: int) -> tuple[cv2.VideoCapture | None, str]:
@@ -62,11 +84,27 @@ def _open_capture_macos(camera_index: int, width: int, height: int, fps: int) ->
     return _open_capture_native(camera_index, cv2.CAP_AVFOUNDATION, "native-avfoundation")
 
 
-def _open_capture_windows(camera_index: int) -> tuple[cv2.VideoCapture | None, str]:
-    cap, mode = _open_capture_native(camera_index, cv2.CAP_MSMF, "native-msmf")
-    if cap is not None:
-        return cap, mode
-    return _open_capture_native(camera_index, cv2.CAP_DSHOW, "native-dshow")
+def _open_capture_windows(
+    camera_index: int,
+    *,
+    prefer_dshow: bool = False,
+    open_timeout_ms: int | None = None,
+) -> tuple[cv2.VideoCapture | None, str]:
+    backends = (
+        ((cv2.CAP_DSHOW, "native-dshow"), (cv2.CAP_MSMF, "native-msmf"))
+        if prefer_dshow
+        else ((cv2.CAP_MSMF, "native-msmf"), (cv2.CAP_DSHOW, "native-dshow"))
+    )
+    for backend, mode in backends:
+        cap, opened_mode = _open_capture_native(
+            camera_index,
+            backend,
+            mode,
+            open_timeout_ms=open_timeout_ms,
+        )
+        if cap is not None:
+            return cap, opened_mode
+    return None, ""
 
 
 def _open_capture_linux(camera_index: int) -> tuple[cv2.VideoCapture | None, str]:
@@ -78,11 +116,26 @@ def _open_capture_linux(camera_index: int) -> tuple[cv2.VideoCapture | None, str
 
 def _configure_capture_for_raw(cap: cv2.VideoCapture, width: int, height: int, fps: int) -> None:
     """Apply capture settings that maximize chance of receiving thermal raw frames."""
+    if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+        try:
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 800.0)
+        except cv2.error:
+            pass
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
     cap.set(cv2.CAP_PROP_FPS, float(fps))
     # Disable automatic RGB conversion when backend supports it.
     cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+
+
+def _is_definite_incompatible_format(message: str) -> bool:
+    """Return True when retrying the same stream mode cannot fix the frame format."""
+    lowered = message.lower()
+    return (
+        "decoded color frames" in lowered
+        or "unsupported frame format" in lowered
+        or "unsupported 2d frame format" in lowered
+    )
 
 
 def _read_convertible_frame(
@@ -100,6 +153,9 @@ def _read_convertible_frame(
             return True, "ok"
         except ValueError as exc:
             last_error = str(exc)
+            # Color / clearly wrong formats will not become thermal raw by waiting.
+            if _is_definite_incompatible_format(last_error):
+                return False, last_error
             time.sleep(0.03)
             continue
     return False, last_error
@@ -127,6 +183,9 @@ def _fourcc_candidates_for_mode(mode: str) -> list[str]:
 
 
 def _frame_attempts_for_mode(mode: str, base_attempts: int) -> int:
+    # Keep explicitly low attempt counts for fast device listing.
+    if base_attempts <= 8:
+        return base_attempts
     if "v4l2" in mode:
         return max(base_attempts, 28)
     if "msmf" in mode:
@@ -201,9 +260,97 @@ def _default_max_index() -> int:
     system = platform.system()
     if system == "Darwin":
         return 3
-    if system in ("Linux", "Windows"):
+    if system == "Windows":
+        # Full thermal probes on missing MSMF/DSHOW indices are very slow on Windows.
+        return 4
+    if system == "Linux":
         return 10
     return 6
+
+
+def _camera_index_appears_present(camera_index: int) -> bool:
+    """Cheap open/close check used to skip dead indexes before thermal probing."""
+    system = platform.system()
+    if system == "Darwin":
+        return camera_index == 0
+    if system == "Windows":
+        # DirectShow fails fast on missing indexes; MSMF often blocks for many seconds.
+        cap, _ = _open_capture_windows(
+            camera_index,
+            prefer_dshow=True,
+            open_timeout_ms=1200,
+        )
+        if cap is None:
+            return False
+        cap.release()
+        return True
+    if system == "Linux":
+        cap, _ = _open_capture_native(camera_index, cv2.CAP_V4L2, "native-v4l2", open_timeout_ms=1200)
+        if cap is None:
+            return False
+        cap.release()
+        return True
+    cap, _ = _open_capture_native(camera_index, cv2.CAP_ANY, "native-any", open_timeout_ms=1200)
+    if cap is None:
+        return False
+    cap.release()
+    return True
+
+
+def _looks_like_thermal_frame_geometry(frame: np.ndarray) -> bool:
+    """Heuristic: InfiRay P2 streams are commonly 256x384 (raw or wrongly decoded as BGR)."""
+    if frame.ndim == 2:
+        return frame.shape[0] in (1, 192, 384) and frame.shape[1] in (256, 512, 196608)
+    if frame.ndim == 3 and frame.shape[2] in (2, 3, 4):
+        return frame.shape[0] == 384 and frame.shape[1] == 256
+    return False
+
+
+def _classify_windows_list_candidate(camera_index: int) -> str:
+    """Classify a Windows capture index for listing without a second full reopen.
+
+    Returns:
+        "missing": index does not open
+        "reject": opened but clearly not a thermal raw source
+        "accept": already produced a convertible thermal frame
+        "probe": needs the slower FOURCC/thermal probe path
+    """
+    # Prefer MSMF: DirectShow often decodes the thermal UVC stream as BGR and hides raw mode.
+    cap, _ = _open_capture_windows(
+        camera_index,
+        prefer_dshow=False,
+        open_timeout_ms=1500,
+    )
+    if cap is None:
+        return "missing"
+    try:
+        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+            try:
+                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 500.0)
+            except cv2.error:
+                pass
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        # Match the thermal capture geometry used by the app.
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 256.0)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 384.0)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return "probe"
+        try:
+            _convert_capture_to_pipeline_frame(frame)
+            return "accept"
+        except ValueError as exc:
+            # Decoded BGR/RGB is never the thermal raw path on Windows.
+            if frame.ndim == 3 and frame.shape[2] >= 3:
+                return "reject"
+            if _looks_like_thermal_frame_geometry(frame):
+                # Packed/raw-ish geometry that still needs FOURCC probing.
+                return "probe"
+            if _is_definite_incompatible_format(str(exc)):
+                return "reject"
+            return "probe"
+    finally:
+        cap.release()
 
 
 def list_opencv_camera_devices(
@@ -216,17 +363,48 @@ def list_opencv_camera_devices(
     devices: list[tuple[int, str]] = []
     max_scan_index = _default_max_index() if max_index is None else max_index
     _ = required_name  # Kept for compatibility; OpenCV index probing is name-agnostic.
+    consecutive_misses = 0
+    seen_present_index = False
+    system = platform.system()
     for index in range(max_scan_index + 1):
+        if system == "Windows":
+            classification = _classify_windows_list_candidate(index)
+            if classification == "missing":
+                consecutive_misses += 1
+                if seen_present_index and consecutive_misses >= 2:
+                    break
+                continue
+            seen_present_index = True
+            consecutive_misses = 0
+            if classification == "reject":
+                continue
+            if classification == "accept":
+                devices.append((index, f"Camera {index}"))
+                continue
+            # "probe" falls through to the shared thermal probe below.
+        elif not _camera_index_appears_present(index):
+            consecutive_misses += 1
+            # After the first live device, stop when subsequent indexes go dark.
+            if seen_present_index and consecutive_misses >= 2:
+                break
+            continue
+        else:
+            seen_present_index = True
+            consecutive_misses = 0
+
         ok, _ = probe_opencv_source(
             camera_index=index,
             width=width,
             height=height,
             fps=fps,
-            frame_attempts=12,
+            frame_attempts=4,
+            # Thermal raw on Windows is typically exposed via MSMF, not DirectShow.
+            prefer_dshow=False,
+            open_timeout_ms=2000,
         )
         if not ok:
             continue
-        if platform.system() == "Darwin" and index == 0:
+        if system == "Darwin" and index == 0:
             name = "USB-Kamera"
         else:
             name = f"Camera {index}"
@@ -240,11 +418,21 @@ def probe_opencv_source(
     height: int = 384,
     fps: int = 25,
     frame_attempts: int = 20,
+    *,
+    prefer_dshow: bool = False,
+    open_timeout_ms: int | None = None,
 ) -> tuple[bool, str]:
     if platform.system() == "Darwin" and camera_index != 0:
         return False, "Only AVFoundation device index 0 (USB-Kamera) is supported in strict macOS mode."
 
-    cap, mode = _open_capture(camera_index, width, height, fps)
+    cap, mode = _open_capture(
+        camera_index,
+        width,
+        height,
+        fps,
+        prefer_dshow=prefer_dshow,
+        open_timeout_ms=open_timeout_ms,
+    )
     if cap is None:
         return False, f"Could not open camera index {camera_index}."
 
@@ -255,6 +443,9 @@ def probe_opencv_source(
     if ok:
         cap.release()
         return True, mode or "ok"
+    if _is_definite_incompatible_format(err):
+        cap.release()
+        return False, err
 
     # 2) Try explicit thermal-related pixel formats.
     fourcc_candidates = _fourcc_candidates_for_mode(mode)
@@ -268,8 +459,35 @@ def probe_opencv_source(
             cap.release()
             return True, mode or "ok"
         last_error = f"{fourcc_tag.strip() or fourcc_tag}: {err}"
+        if _is_definite_incompatible_format(err):
+            # Backend keeps decoding to color; further FOURCC attempts are unlikely to help.
+            break
     cap.release()
     return False, last_error
+
+
+class CameraListWorker(QThread):
+    """Enumerate compatible cameras off the UI thread."""
+
+    devices_ready = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, width: int = 256, height: int = 384, fps: int = 25) -> None:
+        super().__init__()
+        self.width = width
+        self.height = height
+        self.fps = fps
+
+    def run(self) -> None:
+        try:
+            devices = list_opencv_camera_devices(
+                width=self.width,
+                height=self.height,
+                fps=self.fps,
+            )
+            self.devices_ready.emit(devices)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class OpenCVCaptureWorker(QThread):

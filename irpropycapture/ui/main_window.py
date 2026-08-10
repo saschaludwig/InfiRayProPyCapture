@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from irpropycapture.core.camera_capture import OpenCVCaptureWorker, list_opencv_camera_devices, probe_opencv_source
+from irpropycapture.core.camera_capture import CameraListWorker, OpenCVCaptureWorker, probe_opencv_source
 from irpropycapture.core.camera_controls import (
     RANGE_MODE_HIGH,
     RANGE_MODE_LOW,
@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
 
         self.capture_worker: OpenCVCaptureWorker | None = None
         self.processing_worker: ProcessingWorker | None = None
+        self._camera_list_worker: CameraListWorker | None = None
         self._gui_busy = False
         self.recorder = VideoRecorder()
         self.available_camera_items: list[tuple[str, int, str, int, int, float]] = []
@@ -290,7 +291,8 @@ class MainWindow(QMainWindow):
         self.max_spin.valueChanged.connect(self._schedule_state_persist)
         self._configure_hotkeys()
 
-        self.refresh_camera_list()
+        # Defer camera scanning so the window can appear before OpenCV probes indexes.
+        QTimer.singleShot(0, self.refresh_camera_list)
 
         self._apply_initial_window_geometry()
 
@@ -517,24 +519,60 @@ class MainWindow(QMainWindow):
         )
 
     def refresh_camera_list(self) -> None:
+        if self._camera_list_worker is not None and self._camera_list_worker.isRunning():
+            return
+
         self.camera_combo.clear()
         self.available_camera_items.clear()
-        devices = list_opencv_camera_devices(
-            width=256,
-            height=384,
-            fps=25,
-        )
-        for idx, name in devices:
+        self.camera_combo.addItem("Scanning cameras...")
+        self.statusBar().showMessage("Scanning cameras...")
+        self.refresh_button.setEnabled(False)
+        self.start_button.setEnabled(False)
+
+        worker = CameraListWorker(width=256, height=384, fps=25)
+        self._camera_list_worker = worker
+        worker.devices_ready.connect(self._on_camera_list_ready)
+        worker.failed.connect(self._on_camera_list_failed)
+        worker.finished.connect(self._on_camera_list_finished)
+        worker.start()
+
+    def _on_camera_list_ready(self, devices_obj: object) -> None:
+        devices = devices_obj if isinstance(devices_obj, list) else []
+        self.camera_combo.clear()
+        self.available_camera_items.clear()
+        for entry in devices:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                continue
+            idx, name = entry
+            if not isinstance(idx, int) or not isinstance(name, str):
+                continue
             label = f"Camera {idx}: {name} [256x384@25]"
             self.camera_combo.addItem(label)
             self.available_camera_items.append(("opencv", idx, name, 256, 384, 25.0))
         if not self.available_camera_items:
             self.camera_combo.addItem("No compatible thermal camera found")
+            self.statusBar().showMessage("No compatible thermal camera found", 4000)
+        else:
+            self.statusBar().showMessage(f"Found {len(self.available_camera_items)} camera(s)", 3000)
         for pos, item in enumerate(self.available_camera_items):
             _, idx, name, _, _, _ = item
             if idx == self.state.camera_index or name == self.state.camera_name:
                 self.camera_combo.setCurrentIndex(pos)
                 break
+
+    def _on_camera_list_failed(self, message: str) -> None:
+        self.camera_combo.clear()
+        self.available_camera_items.clear()
+        self.camera_combo.addItem("Camera scan failed")
+        self.statusBar().showMessage(f"Camera scan failed: {message}", 5000)
+
+    def _on_camera_list_finished(self) -> None:
+        self.refresh_button.setEnabled(True)
+        self.start_button.setEnabled(True)
+        worker = self._camera_list_worker
+        self._camera_list_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def selected_camera_item(self) -> tuple[str, int, str, int, int, float]:
         pos = self.camera_combo.currentIndex()
@@ -751,6 +789,9 @@ class MainWindow(QMainWindow):
             self._perf.observe("ui_present", time.perf_counter() - ui_start)
 
     def _stop_workers(self) -> None:
+        if self._camera_list_worker is not None:
+            self._camera_list_worker.wait(1500)
+            self._camera_list_worker = None
         if self.capture_worker is not None:
             self.capture_worker.stop()
             self.capture_worker = None

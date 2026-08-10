@@ -52,7 +52,19 @@ For development and test tooling, use `pip install -e ".[dev]"`.
   - install `libusb-1.0` via your package manager (distribution-specific package name)
   - ensure user/device permissions allow USB control access
 - Windows:
-  - install a compatible USB backend/driver stack (https://github.com/libusb/libusb/wiki/Windows#user-content-How_to_use_libusb_on_Windows)
+  - Install `libusb-1.0.dll` and ensure it is on `PATH` (for example `C:\Tools\libusb`).
+  - For temperature-range control **and** live video at the same time, install a
+    **libusb-win32 upper filter** with [Zadig](https://zadig.akeo.ie/)
+    (do **not** replace the UVC camera driver):
+    1. Options → List All Devices
+    2. Select `USB Camera (Interface 0)` for `VID_0BDA` / `PID_5830`
+    3. Choose `libusb-win32`
+    4. Open the arrow next to *Replace Driver* and choose **Install Filter Driver**
+    5. Confirm Windows still shows a normal `USB Video Device` / Camera entry
+  - IrProPyCapture uses the **libusb0** pyusb backend on Windows to talk to that filter.
+  - Start the camera stream in IrProPyCapture **before** switching temperature range.
+  - Replacing Interface 0 with WinUSB/libusb (instead of a filter) removes the webcam
+    from Windows/OBS and breaks capture.
 
 ## Run
 
@@ -106,5 +118,7 @@ https://github.com/LeoDJ/P2Pro-Viewer
 - Windows:
   - Capture uses OpenCV MSMF backend first, then DirectShow fallback for broader USB camera compatibility.
   - If no stream opens, verify camera privacy settings and close software that may lock the camera.
-  - Temperature range switching depends on a working `pyusb` backend and a compatible USB driver binding.
+  - Temperature range switching needs `libusb-1.0.dll` on `PATH` plus a libusb-win32
+    **filter** on Interface 0 (see USB backend setup above). A plain UVC binding is
+    enough for video, but vendor control transfers then fail with `Entity not found`.
 
