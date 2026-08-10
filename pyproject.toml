@@ -40,3 +40,7 @@ irpropycapture = ["resources/icons/*.svg"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+filterwarnings = [
+    # pyusb 1.3.1: ctypes Structures with _pack_ lack explicit _layout_='ms' (Python 3.14+)
+    "ignore:Due to '_pack_':DeprecationWarning:usb.backend.libusb0",
+]
