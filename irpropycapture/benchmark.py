@@ -58,7 +58,7 @@ def run_benchmark(frames: int, color_map_name: str) -> None:
             auto_min_temp=result.min_value,
             auto_max_temp=result.max_value,
         )
-        _ = cv2.resize(bgr, (1024, 768), interpolation=cv2.INTER_NEAREST)
+        _ = cv2.resize(bgr, (1024, 768), interpolation=cv2.INTER_CUBIC)
         render_ms.append((time.perf_counter() - render_start) * 1000.0)
         total_ms.append((time.perf_counter() - total_start) * 1000.0)
 

@@ -187,5 +187,7 @@ def apply_orientation(image_bgr: np.ndarray, orientation: str) -> np.ndarray:
         return cv2.flip(image_bgr, 1)
     if orientation == "Flip Vertical":
         return cv2.flip(image_bgr, 0)
+    if orientation == "Flip Both":
+        return cv2.flip(image_bgr, -1)
     return image_bgr
 

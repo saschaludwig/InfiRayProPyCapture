@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QMutex, QMutexLocker, QThread, QWaitCondition, Signal
 
+from irpropycapture.core.dnn_upscale import upscale_bgr_sharp
 from irpropycapture.core.image_processor import (
     apply_orientation,
     format_temperature_overlay,
@@ -144,14 +145,24 @@ class ProcessingWorker(QThread):
             oriented_thermal = apply_orientation(measurement_thermal, settings.orientation)
 
         overlay_start = time.perf_counter()
-        export_bgr = _resize_export(rendered)
+        preview_mode = settings.preview_interpolation
+        display_base = rendered
+        upscale_elapsed = 0.0
+        if normalize_preview_interpolation(settings.preview_interpolation) == "Sharp":
+            # DNN x4 once for preview+export; final fit uses cubic. Measurements stay on 256x192.
+            upscale_start = time.perf_counter()
+            display_base = upscale_bgr_sharp(rendered)
+            upscale_elapsed = time.perf_counter() - upscale_start
+            preview_mode = "Cubic"
+
+        export_bgr = _resize_export(display_base)
         if oriented_thermal is not None:
             if settings.show_grid:
                 _draw_grid(export_bgr, oriented_thermal, settings.grid_density, settings.unit)
             if settings.show_min_max:
                 _draw_min_max(export_bgr, oriented_thermal, settings.unit)
 
-        preview_bgr = _resize_preview(rendered, settings.preview_width, settings.preview_height, settings.preview_interpolation)
+        preview_bgr = _resize_preview(display_base, settings.preview_width, settings.preview_height, preview_mode)
         if oriented_thermal is not None:
             if settings.show_grid:
                 _draw_grid(preview_bgr, oriented_thermal, settings.grid_density, settings.unit)
@@ -210,6 +221,7 @@ class ProcessingWorker(QThread):
         timings_ms = {
             "decode": decode_elapsed * 1000.0,
             "render": render_elapsed * 1000.0,
+            "upscale": upscale_elapsed * 1000.0,
             "overlay_resize": overlay_elapsed * 1000.0,
             "histogram": histogram_elapsed * 1000.0,
             "history": history_elapsed * 1000.0,
@@ -252,10 +264,38 @@ class ProcessingWorker(QThread):
         return gradient_color
 
 
+# Preview/export resize modes. Legacy Fast/Smooth are mapped for saved UI state.
+# Sharp uses ESPCN x4 (dnn_superres) before the final preview/export fit.
+PREVIEW_INTERPOLATION_MODES = ("Nearest", "Linear", "Cubic", "Lanczos", "Sharp")
+_LEGACY_INTERPOLATION_ALIASES = {
+    "Fast": "Nearest",
+    "Smooth": "Cubic",
+}
+
+
+def normalize_preview_interpolation(mode: str) -> str:
+    """Map UI/state interpolation labels to a canonical preview mode."""
+    if mode in PREVIEW_INTERPOLATION_MODES:
+        return mode
+    return _LEGACY_INTERPOLATION_ALIASES.get(mode, "Cubic")
+
+
+def _interpolation_flag(mode: str) -> int:
+    canonical = normalize_preview_interpolation(mode)
+    if canonical == "Nearest":
+        return cv2.INTER_NEAREST
+    if canonical == "Linear":
+        return cv2.INTER_LINEAR
+    if canonical == "Lanczos":
+        return cv2.INTER_LANCZOS4
+    # Cubic and Sharp (final fit after DNN) use cubic interpolation.
+    return cv2.INTER_CUBIC
+
+
 def _resize_preview(image_bgr: np.ndarray, width: int, height: int, interpolation_mode: str) -> np.ndarray:
     if width <= 0 or height <= 0:
         return image_bgr.copy()
-    interpolation = cv2.INTER_NEAREST if interpolation_mode == "Fast" else cv2.INTER_LINEAR
+    interpolation = _interpolation_flag(interpolation_mode)
     src_h, src_w = image_bgr.shape[:2]
     scale = min(width / float(src_w), height / float(src_h))
     out_w = max(1, int(src_w * scale))
@@ -269,7 +309,7 @@ def _resize_export(image_bgr: np.ndarray) -> np.ndarray:
         target = (768, 1024)
     else:
         target = (1024, 768)
-    return cv2.resize(image_bgr, target, interpolation=cv2.INTER_NEAREST)
+    return cv2.resize(image_bgr, target, interpolation=cv2.INTER_CUBIC)
 
 
 def append_export_color_scale(

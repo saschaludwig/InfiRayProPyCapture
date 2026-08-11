@@ -51,6 +51,7 @@ from irpropycapture.core.frame_processing_worker import (
     ProcessingSettings,
     ProcessingWorker,
     append_export_color_scale,
+    normalize_preview_interpolation,
 )
 from irpropycapture.core.image_processor import AVAILABLE_COLOR_MAPS, format_temperature_ui
 from irpropycapture.core.perf import PerfReporter
@@ -153,9 +154,11 @@ class MainWindow(QMainWindow):
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["C", "F"])
         self.preview_interpolation_combo = QComboBox()
-        self.preview_interpolation_combo.addItems(["Fast", "Smooth"])
+        self.preview_interpolation_combo.addItems(["Nearest", "Linear", "Cubic", "Lanczos", "Sharp"])
         self.orientation_combo = QComboBox()
-        self.orientation_combo.addItems(["Normal", "Rotate Left", "Rotate Right", "Flip Horizontal", "Flip Vertical"])
+        self.orientation_combo.addItems(
+            ["Normal", "Rotate Left", "Rotate Right", "Flip Horizontal", "Flip Vertical", "Flip Both"]
+        )
         self.grid_checkbox = QCheckBox("Show temperature grid")
         self.min_max_checkbox = QCheckBox("Show min/max markers")
         self.grid_density_combo = QComboBox()
@@ -401,7 +404,7 @@ class MainWindow(QMainWindow):
     def _restore_state_to_controls(self) -> None:
         self.color_map_combo.setCurrentText(self.state.color_map)
         self.unit_combo.setCurrentText(self.state.temperature_format)
-        self.preview_interpolation_combo.setCurrentText(self.state.preview_interpolation)
+        self.preview_interpolation_combo.setCurrentText(normalize_preview_interpolation(self.state.preview_interpolation))
         self.grid_checkbox.setChecked(self.state.show_temperature_grid)
         self.min_max_checkbox.setChecked(self.state.show_min_max_markers)
         self.orientation_combo.setCurrentText(self.state.orientation)
@@ -461,7 +464,7 @@ class MainWindow(QMainWindow):
         unit_combo.setCurrentText(self.unit_combo.currentText())
 
         interpolation_combo = QComboBox(dialog)
-        interpolation_combo.addItems(["Fast", "Smooth"])
+        interpolation_combo.addItems(["Nearest", "Linear", "Cubic", "Lanczos", "Sharp"])
         interpolation_combo.setCurrentText(self.preview_interpolation_combo.currentText())
 
         grid_density_combo = QComboBox(dialog)

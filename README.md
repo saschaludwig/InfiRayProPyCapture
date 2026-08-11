@@ -9,7 +9,8 @@ Python port of the thermal camera viewer by **atomic14** with a PySide6 desktop 
 - Temperature stats: Min, Max, Average, Center
 - Optional temperature grid overlay
 - Optional min/max markers with smart labels
-- Preview scaling with aspect ratio lock and selectable interpolation (`Fast`/`Smooth`)
+- Preview scaling with aspect ratio lock and selectable interpolation (`Nearest`/`Linear`/`Cubic`/`Lanczos`/`Sharp`)
+- Optional Sharp preview/export upscaling via ESPCN x4 (`opencv-contrib` dnn_superres; display-only)
 - Histogram with active colormap scale
 - 1 minute temperature history chart (Max/Min/Ave/Center)
 - Manual temperature range (optional)

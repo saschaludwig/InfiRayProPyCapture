@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 
 from irpropycapture.core.frame_processing_worker import append_export_color_scale
-from irpropycapture.core.image_processor import render_thermal_image
+from irpropycapture.core.image_processor import apply_orientation, render_thermal_image
 
 
 class ImageProcessorTests(unittest.TestCase):
@@ -56,6 +56,12 @@ class ImageProcessorTests(unittest.TestCase):
         self.assertEqual(result.shape[1], image.shape[1])
         self.assertGreater(result.shape[0], image.shape[0])
         np.testing.assert_array_equal(result[: image.shape[0], :, :], image)
+
+    def test_apply_orientation_flip_both(self) -> None:
+        image = np.arange(3 * 4 * 3, dtype=np.uint8).reshape(3, 4, 3)
+        flipped = apply_orientation(image, "Flip Both")
+        expected = np.flip(np.flip(image, axis=0), axis=1)
+        np.testing.assert_array_equal(flipped, expected)
 
 
 if __name__ == "__main__":

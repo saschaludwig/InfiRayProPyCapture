@@ -18,7 +18,7 @@ class AppState:
     show_min_max_markers: bool = True
     grid_density: str = "Medium"
     temperature_format: str = "C"
-    preview_interpolation: str = "Smooth"
+    preview_interpolation: str = "Cubic"
     manual_range_enabled: bool = False
     manual_min_temp: float = 20.0
     manual_max_temp: float = 40.0
@@ -55,6 +55,12 @@ def load_state() -> AppState:
                 filtered_payload["export_save_dir"] = legacy_recording_dir
             elif isinstance(legacy_image_dir, str) and legacy_image_dir:
                 filtered_payload["export_save_dir"] = legacy_image_dir
+        # Backward compatibility: Fast/Smooth → Nearest/Cubic.
+        legacy_interpolation = filtered_payload.get("preview_interpolation")
+        if legacy_interpolation == "Fast":
+            filtered_payload["preview_interpolation"] = "Nearest"
+        elif legacy_interpolation == "Smooth":
+            filtered_payload["preview_interpolation"] = "Cubic"
         return AppState(**filtered_payload)
     except Exception:
         return AppState()
