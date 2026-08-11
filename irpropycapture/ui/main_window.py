@@ -47,6 +47,7 @@ from irpropycapture.core.camera_controls import (
 from irpropycapture.core.frame_processing_worker import (
     MIN_HISTOGRAM_RENDER_HEIGHT,
     MIN_HISTORY_RENDER_HEIGHT,
+    PREVIEW_INTERPOLATION_CHOICES,
     ProcessingResult,
     ProcessingSettings,
     ProcessingWorker,
@@ -70,6 +71,27 @@ def _load_settings_icon() -> QIcon:
     with resources.as_file(ref) as path:
         bundled = QIcon(str(path))
     return QIcon.fromTheme("preferences-system", bundled)
+
+
+def _populate_preview_interpolation_combo(combo: QComboBox) -> None:
+    combo.clear()
+    for mode, label in PREVIEW_INTERPOLATION_CHOICES:
+        combo.addItem(label, mode)
+
+
+def _set_preview_interpolation_combo(combo: QComboBox, mode: str) -> None:
+    canonical = normalize_preview_interpolation(mode)
+    index = combo.findData(canonical)
+    if index < 0:
+        index = combo.findData("Cubic")
+    combo.setCurrentIndex(index if index >= 0 else 0)
+
+
+def _selected_preview_interpolation(combo: QComboBox) -> str:
+    data = combo.currentData()
+    if isinstance(data, str) and data:
+        return normalize_preview_interpolation(data)
+    return normalize_preview_interpolation(combo.currentText())
 
 
 class MainWindow(QMainWindow):
@@ -154,7 +176,7 @@ class MainWindow(QMainWindow):
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["C", "F"])
         self.preview_interpolation_combo = QComboBox()
-        self.preview_interpolation_combo.addItems(["Nearest", "Linear", "Cubic", "Lanczos", "Sharp"])
+        _populate_preview_interpolation_combo(self.preview_interpolation_combo)
         self.orientation_combo = QComboBox()
         self.orientation_combo.addItems(
             ["Normal", "Rotate Left", "Rotate Right", "Flip Horizontal", "Flip Vertical", "Flip Both"]
@@ -404,7 +426,7 @@ class MainWindow(QMainWindow):
     def _restore_state_to_controls(self) -> None:
         self.color_map_combo.setCurrentText(self.state.color_map)
         self.unit_combo.setCurrentText(self.state.temperature_format)
-        self.preview_interpolation_combo.setCurrentText(normalize_preview_interpolation(self.state.preview_interpolation))
+        _set_preview_interpolation_combo(self.preview_interpolation_combo, self.state.preview_interpolation)
         self.grid_checkbox.setChecked(self.state.show_temperature_grid)
         self.min_max_checkbox.setChecked(self.state.show_min_max_markers)
         self.orientation_combo.setCurrentText(self.state.orientation)
@@ -419,7 +441,7 @@ class MainWindow(QMainWindow):
     def _persist_state(self) -> None:
         self.state.color_map = self.color_map_combo.currentText()
         self.state.temperature_format = self.unit_combo.currentText()
-        self.state.preview_interpolation = self.preview_interpolation_combo.currentText()
+        self.state.preview_interpolation = _selected_preview_interpolation(self.preview_interpolation_combo)
         self.state.show_temperature_grid = self.grid_checkbox.isChecked()
         self.state.show_min_max_markers = self.min_max_checkbox.isChecked()
         self.state.orientation = self.orientation_combo.currentText()
@@ -464,8 +486,11 @@ class MainWindow(QMainWindow):
         unit_combo.setCurrentText(self.unit_combo.currentText())
 
         interpolation_combo = QComboBox(dialog)
-        interpolation_combo.addItems(["Nearest", "Linear", "Cubic", "Lanczos", "Sharp"])
-        interpolation_combo.setCurrentText(self.preview_interpolation_combo.currentText())
+        _populate_preview_interpolation_combo(interpolation_combo)
+        _set_preview_interpolation_combo(
+            interpolation_combo,
+            _selected_preview_interpolation(self.preview_interpolation_combo),
+        )
 
         grid_density_combo = QComboBox(dialog)
         grid_density_combo.addItems(["Low", "Medium", "High"])
@@ -488,7 +513,10 @@ class MainWindow(QMainWindow):
             return
 
         self.unit_combo.setCurrentText(unit_combo.currentText())
-        self.preview_interpolation_combo.setCurrentText(interpolation_combo.currentText())
+        _set_preview_interpolation_combo(
+            self.preview_interpolation_combo,
+            _selected_preview_interpolation(interpolation_combo),
+        )
         self.grid_density_combo.setCurrentText(grid_density_combo.currentText())
         self.state.export_include_color_scale = export_color_scale_checkbox.isChecked()
         self._schedule_state_persist()
@@ -723,7 +751,7 @@ class MainWindow(QMainWindow):
             manual_range_enabled=self.manual_range_checkbox.isChecked(),
             manual_min_temp=float(self.min_spin.value()),
             manual_max_temp=float(self.max_spin.value()),
-            preview_interpolation=self.preview_interpolation_combo.currentText(),
+            preview_interpolation=_selected_preview_interpolation(self.preview_interpolation_combo),
             orientation=self.orientation_combo.currentText(),
             show_grid=self.grid_checkbox.isChecked(),
             show_min_max=self.min_max_checkbox.isChecked(),

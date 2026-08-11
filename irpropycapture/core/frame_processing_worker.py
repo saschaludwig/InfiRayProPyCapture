@@ -267,16 +267,33 @@ class ProcessingWorker(QThread):
 # Preview/export resize modes. Legacy Fast/Smooth are mapped for saved UI state.
 # Sharp uses ESPCN x4 (dnn_superres) before the final preview/export fit.
 PREVIEW_INTERPOLATION_MODES = ("Nearest", "Linear", "Cubic", "Lanczos", "Sharp")
+PREVIEW_INTERPOLATION_CHOICES = (
+    ("Nearest", "Nearest (Low CPU)"),
+    ("Linear", "Linear (Low CPU)"),
+    ("Cubic", "Cubic (Low CPU)"),
+    ("Lanczos", "Lanczos (Medium CPU)"),
+    ("Sharp", "Sharp (High CPU)"),
+)
+_PREVIEW_INTERPOLATION_LABELS = {mode: label for mode, label in PREVIEW_INTERPOLATION_CHOICES}
 _LEGACY_INTERPOLATION_ALIASES = {
     "Fast": "Nearest",
     "Smooth": "Cubic",
 }
 
 
+def preview_interpolation_label(mode: str) -> str:
+    """Return the UI label for a canonical or legacy interpolation mode."""
+    canonical = normalize_preview_interpolation(mode)
+    return _PREVIEW_INTERPOLATION_LABELS.get(canonical, _PREVIEW_INTERPOLATION_LABELS["Cubic"])
+
+
 def normalize_preview_interpolation(mode: str) -> str:
     """Map UI/state interpolation labels to a canonical preview mode."""
     if mode in PREVIEW_INTERPOLATION_MODES:
         return mode
+    for canonical, label in PREVIEW_INTERPOLATION_CHOICES:
+        if mode == label:
+            return canonical
     return _LEGACY_INTERPOLATION_ALIASES.get(mode, "Cubic")
 
 

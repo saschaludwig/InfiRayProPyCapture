@@ -18,6 +18,7 @@ from irpropycapture.core.frame_processing_worker import (
     _resize_export,
     _resize_preview,
     normalize_preview_interpolation,
+    preview_interpolation_label,
 )
 
 
@@ -28,9 +29,20 @@ class InterpolationTests(unittest.TestCase):
         self.assertEqual(normalize_preview_interpolation("Cubic"), "Cubic")
         self.assertEqual(normalize_preview_interpolation("Lanczos"), "Lanczos")
         self.assertEqual(normalize_preview_interpolation("Sharp"), "Sharp")
+        self.assertEqual(normalize_preview_interpolation("Nearest (Low CPU)"), "Nearest")
+        self.assertEqual(normalize_preview_interpolation("Linear (Low CPU)"), "Linear")
+        self.assertEqual(normalize_preview_interpolation("Cubic (Low CPU)"), "Cubic")
+        self.assertEqual(normalize_preview_interpolation("Lanczos (Medium CPU)"), "Lanczos")
+        self.assertEqual(normalize_preview_interpolation("Sharp (High CPU)"), "Sharp")
         self.assertEqual(normalize_preview_interpolation("Fast"), "Nearest")
         self.assertEqual(normalize_preview_interpolation("Smooth"), "Cubic")
         self.assertEqual(normalize_preview_interpolation("unknown"), "Cubic")
+
+    def test_preview_interpolation_label(self) -> None:
+        self.assertEqual(preview_interpolation_label("Nearest"), "Nearest (Low CPU)")
+        self.assertEqual(preview_interpolation_label("Lanczos"), "Lanczos (Medium CPU)")
+        self.assertEqual(preview_interpolation_label("Sharp"), "Sharp (High CPU)")
+        self.assertEqual(preview_interpolation_label("Smooth"), "Cubic (Low CPU)")
 
     def test_interpolation_flags(self) -> None:
         self.assertEqual(_interpolation_flag("Nearest"), cv2.INTER_NEAREST)
